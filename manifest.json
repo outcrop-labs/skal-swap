@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "id": "skal.claude-code-switcher",
+  "name": "Skal Claude Code Switcher",
+  "version": "1.0.0",
+  "author": "Outcrop Labs",
+  "license": "MIT",
+  "homepage": "https://github.com/outcrop-labs/skal-claude-code-switcher",
+  "description": "Menubar switcher for Claude Code API profiles — keys, endpoints, and model mappings — with optional usage readouts.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "Claude Code profiles",
+    "description": "Show and switch the active Claude Code API key/endpoint profile.",
+    "category": "Developer",
+    "allowMultiple": false,
+    "defaultSection": "left",
+    "defaults": {
+      "icon": "Logo",
+      "labelStyle": "Name",
+      "glyph": "󰌆"
+    },
+    "schema": [
+      {
+        "key": "icon",
+        "type": "enum",
+        "options": ["Logo", "Glyph", "None"],
+        "defaultValue": "Logo",
+        "label": "Bar icon",
+        "description": "Claude logomark tinted to the theme, a custom Nerd Font glyph, or no icon."
+      },
+      {
+        "key": "labelStyle",
+        "type": "enum",
+        "options": ["Name", "Host", "Icon"],
+        "defaultValue": "Name",
+        "label": "Bar label",
+        "description": "What the bar shows next to the icon: profile name, endpoint host, or icon only."
+      },
+      {
+        "key": "glyph",
+        "type": "string",
+        "defaultValue": "󰌆",
+        "label": "Icon glyph",
+        "description": "Nerd Font glyph used when the icon is set to Glyph (also used in toasts)."
+      }
+    ]
+  }
+}

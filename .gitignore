@@ -1,0 +1,4 @@
+# Editor/QML detritus
+*.qmlc
+*.jsc
+.swp.*

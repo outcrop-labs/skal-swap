@@ -1,0 +1,27 @@
+# Claude Code API profiles for the skal.claude-code-switcher plugin.
+# Copy to ~/.config/skal.claude-code-switcher/profiles.conf (chmod 600) or
+# just run: skal-ccs init
+#
+# [section-id]         what `skal-ccs use <section-id>` switches to
+#   name               label shown in the bar and menu
+#   base_url           Anthropic-compatible endpoint (omit for official API)
+#   token              API token (omit to fall back to claude login/OAuth)
+#   env.<KEY>          extra env written to ~/.claude/settings.json
+#   usage              optional account marker for usage display (zai)
+
+[zai-plan]
+name = Z.AI coding plan
+base_url = https://api.z.ai/api/anthropic
+token = your-zai-token
+usage = zai
+env.ANTHROPIC_DEFAULT_SONNET_MODEL = glm-5.3
+env.ANTHROPIC_DEFAULT_OPUS_MODEL = glm-5.3
+env.ANTHROPIC_DEFAULT_HAIKU_MODEL = glm-5.3-flash
+
+[another-provider]
+name = Another provider
+base_url = https://provider.example/anthropic
+token = another-token
+
+[anthropic-login]
+name = Claude (OAuth)

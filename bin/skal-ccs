@@ -1,0 +1,417 @@
+#!/usr/bin/env bash
+# skal-ccs — Claude Code API profile switcher.
+#
+# Companion CLI of the skal.claude-code-switcher Omarchy bar plugin.
+# Profiles (name / base_url / token / extra env such as model mappings) live
+# in an INI-style file OUTSIDE the plugin directory, so secrets never end up
+# in a published repo:
+#
+#     ~/.config/skal.claude-code-switcher/profiles.conf   (chmod 600)
+#
+#     [zai-plan-a]
+#     name = Z.AI plan A
+#     base_url = https://api.z.ai/api/anthropic
+#     token = ...
+#     env.ANTHROPIC_DEFAULT_SONNET_MODEL = glm-5.3
+#     usage = zai          # optional: usage-account marker for the menu
+#
+# A profile with no token/base_url (e.g. [anthropic-login]) clears the
+# overrides and returns Claude Code to its OAuth login credentials.
+#
+# `use` rewrites the managed ANTHROPIC_* keys in ~/.claude/settings.json's
+# env atomically: every managed key is removed first, then the target
+# profile's keys are written — so switching providers never leaves a stale
+# endpoint or model mapping behind. All other settings are untouched.
+# Already-running claude sessions keep the previous key until restarted.
+#
+# Overrides for testing: CCS_PROFILES, CCS_SETTINGS, GLM_KEYS.
+
+set -euo pipefail
+
+PROFILES="${CCS_PROFILES:-$HOME/.config/skal.claude-code-switcher/profiles.conf}"
+SETTINGS="${CCS_SETTINGS:-$HOME/.claude/settings.json}"
+GLM_KEYS="${GLM_KEYS:-$HOME/.config/glm-keys.env}"
+EXAMPLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Env keys this tool owns. Cleared on every switch, then re-set from the
+# target profile (plus any env.* key any profile sets).
+readonly -a MANAGED_BASE=(
+  ANTHROPIC_AUTH_TOKEN
+  ANTHROPIC_API_KEY
+  ANTHROPIC_BASE_URL
+  ANTHROPIC_MODEL
+  ANTHROPIC_SMALL_FAST_MODEL
+  ANTHROPIC_DEFAULT_HAIKU_MODEL
+  ANTHROPIC_DEFAULT_SONNET_MODEL
+  ANTHROPIC_DEFAULT_OPUS_MODEL
+)
+
+declare -A P_NAME=() P_BASE=() P_TOKEN=() P_USAGE=()
+declare -a PROFILE_IDS=()
+declare -a ENV_LINES=()
+
+die() { echo "skal-ccs: $*" >&2; exit 1; }
+mask() { printf '%s…' "${1:0:8}"; }
+
+usage() {
+    cat <<'EOF'
+usage: skal-ccs [command]
+
+  status          which profile Claude Code is on (default)
+  status --json   {current, current_known, profiles[]} for the bar widget
+  list            table of configured profiles
+  use <id>        switch Claude Code to a profile
+  swap            quick-toggle between the first two profiles (hotkey action)
+  edit            open the profiles file in $EDITOR
+  init            write an example profiles file
+  migrate-glm     import ~/.config/glm-keys.env + the active key [--force]
+  usage --json    per-account usage from ai-usagebar, normalized
+
+profiles : ~/.config/skal.claude-code-switcher/profiles.conf
+settings : ~/.claude/settings.json (only env.ANTHROPIC_* keys are touched)
+EOF
+    exit "${1:-0}"
+}
+
+parse_profiles() { # emits: id \t key \t value
+    awk '
+        /^[ \t]*(#|$)/ { next }
+        /^[ \t]*\[/ {
+            sec = $0
+            sub(/^[ \t]*\[/, "", sec); sub(/\].*$/, "", sec)
+            gsub(/[ \t]/, "", sec)
+            next
+        }
+        sec == "" { next }
+        {
+            eq = index($0, "="); if (!eq) next
+            key = substr($0, 1, eq - 1); val = substr($0, eq + 1)
+            sub(/^[ \t]+/, "", key); sub(/[ \t]+$/, "", key)
+            sub(/^[ \t]+/, "", val); sub(/[ \t]+$/, "", val)
+            # \047 = apostrophe, spelled octally so this program stays in
+            # one shell-safe single-quoted string
+            if (length(val) > 1 && substr(val, length(val), 1) == substr(val, 1, 1) &&
+                (substr(val, 1, 1) == "\"" || substr(val, 1, 1) == "\047"))
+                val = substr(val, 2, length(val) - 2)
+            print sec "\t" key "\t" val
+        }
+    ' "$PROFILES"
+}
+
+load_profiles() {
+    [[ -r $PROFILES ]] || die "no profiles file at $PROFILES — start with: skal-ccs init"
+    local sec key val
+    local -A seen=()
+    while IFS=$'\t' read -r sec key val; do
+        [[ -n ${seen[$sec]+x} ]] || { seen[$sec]=1; PROFILE_IDS+=("$sec"); }
+        case $key in
+            name) P_NAME[$sec]=$val ;;
+            base_url) P_BASE[$sec]=$val ;;
+            token) P_TOKEN[$sec]=$val ;;
+            usage) P_USAGE[$sec]=$val ;;
+            env.*) ENV_LINES+=("$sec"$'\t'"${key#env.}"$'\t'"$val") ;;
+            *) echo "skal-ccs: ignoring unknown key '$key' in [$sec]" >&2 ;;
+        esac
+    done < <(parse_profiles)
+}
+
+host_of() {
+    local u=${1:-}
+    [[ -n $u ]] || { echo "api.anthropic.com"; return; }
+    u=${u#*://}
+    echo "${u%%/*}"
+}
+
+# Same label rule as the ai-usagebar multi-account shim, so usage ids match.
+sanitize_label() { printf '%s' "$1" | sed 's/[^A-Za-z0-9_.-]/_/g'; }
+
+usage_id_of() { # <profile-id> -> "zai@label" or ""
+    local id=$1 vendor=${P_USAGE[$id]:-}
+    [[ -n $vendor ]] || return 0
+    local label=${P_NAME[$id]:-}
+    [[ -n $label ]] || label=$id
+    echo "$vendor@$(sanitize_label "$label")"
+}
+
+settings_env() { jq -r --arg k "$1" '.env[$k] // empty' "$SETTINGS" 2>/dev/null || true; }
+
+# Which profile (if any) the live settings correspond to. Token match first;
+# tokenless profiles match when no AUTH_TOKEN is set and base URLs agree.
+current_id() {
+    local id ct cb tok base
+    ct=$(settings_env ANTHROPIC_AUTH_TOKEN)
+    cb=$(settings_env ANTHROPIC_BASE_URL)
+    if [[ -n $ct ]]; then
+        for id in "${PROFILE_IDS[@]}"; do
+            [[ ${P_TOKEN[$id]:-} == "$ct" ]] && { echo "$id"; return 0; }
+        done
+        return 1
+    fi
+    for id in "${PROFILE_IDS[@]}"; do
+        tok=${P_TOKEN[$id]:-} base=${P_BASE[$id]:-}
+        [[ -n $tok ]] && continue
+        if [[ -z $base && -z $cb ]] || [[ -n $base && $base == "$cb" ]]; then
+            echo "$id"; return 0
+        fi
+    done
+    return 1
+}
+
+rewrite() { # rewrite <file> <jq-args…> (filter last) — atomic, keeps inode/perms
+    local file=$1
+    shift
+    local tmp rc
+    tmp=$(mktemp)
+    if jq "$@" "$file" >"$tmp"; then
+        cat "$tmp" >"$file"
+        rc=0
+    else
+        rc=$?
+        echo "skal-ccs: jq failed on $file — left untouched" >&2
+    fi
+    rm -f "$tmp"
+    return "$rc"
+}
+
+apply_profile() { # apply_profile <id>
+    local id=$1
+    [[ -n ${P_NAME[$id]+x} ]] || die "no profile '$id' (see: skal-ccs list)"
+    [[ -f $SETTINGS ]] || die "no $SETTINGS — run claude once first"
+
+    local -a pairs=()
+    [[ -n ${P_TOKEN[$id]:-} ]] && pairs+=("ANTHROPIC_AUTH_TOKEN"$'\t'"${P_TOKEN[$id]}")
+    [[ -n ${P_BASE[$id]:-} ]] && pairs+=("ANTHROPIC_BASE_URL"$'\t'"${P_BASE[$id]}")
+
+    local line pid key val
+    for line in "${ENV_LINES[@]}"; do
+        IFS=$'\t' read -r pid key val <<<"$line"
+        [[ $pid == "$id" ]] || continue
+        pairs+=("$key"$'\t'"$val")
+    done
+
+    local -a managed=("${MANAGED_BASE[@]}")
+    for line in "${ENV_LINES[@]}"; do
+        IFS=$'\t' read -r pid key val <<<"$line"
+        managed+=("$key")
+    done
+
+    local pairs_json managed_json
+    pairs_json=$(printf '%s\n' "${pairs[@]:-}" \
+        | jq -R -s 'split("\n") | map(select(length > 0)) | map(split("\t"))
+                    | reduce .[] as [$k, $v] ({}; .[$k] = $v)')
+    managed_json=$(printf '%s\n' "${managed[@]}" | sort -u \
+        | jq -R -s 'split("\n") | map(select(length > 0))')
+
+    rewrite "$SETTINGS" \
+        --argjson del_keys "$managed_json" --argjson add_pairs "$pairs_json" \
+        '.env = ((.env // {})
+                 | with_entries(. as $e | select(($del_keys | index($e.key)) == null))
+                 + $add_pairs)'
+    chmod 600 "$SETTINGS"
+    echo "switched to ${P_NAME[$id]:-$id} — restart running claude sessions to pick it up"
+}
+
+status_json() {
+    local cur id tsv uid prefix
+    cur=$(current_id) || cur=""
+    tsv=""
+    for id in "${PROFILE_IDS[@]}"; do
+        prefix=${P_TOKEN[$id]:-}
+        [[ -n $prefix ]] && prefix=$(mask "$prefix")
+        uid=$(usage_id_of "$id")
+        tsv+="$id"$'\t'"${P_NAME[$id]:-}"$'\t'"$(host_of "${P_BASE[$id]:-}")"$'\t'"$prefix"$'\t'"$uid"$'\n'
+    done
+    printf '%s' "$tsv" | jq -R -s --arg cur "$cur" --arg settings "$SETTINGS" '
+        split("\n") | map(select(length > 0)) | map(split("\t"))
+        | map({id: .[0], name: .[1], host: .[2], token_prefix: .[3],
+               usage_id: (if .[4] == "" then null else .[4] end)})
+        | {settings: $settings,
+           current: (if $cur == "" then null else $cur end),
+           current_known: ($cur != ""),
+           profiles: .}'
+}
+
+status_human() {
+    local cur id
+    if cur=$(current_id); then
+        local key_desc="login"
+        [[ -n ${P_TOKEN[$cur]:-} ]] && key_desc=$(mask "${P_TOKEN[$cur]}")
+        echo "claude code : ${P_NAME[$cur]:-$cur} ($key_desc) @ $(host_of "${P_BASE[$cur]:-}")"
+    else
+        local tok
+        tok=$(settings_env ANTHROPIC_AUTH_TOKEN)
+        echo "claude code : ⚠ ${tok:+$(mask "$tok")} ${tok:-(no token set)} — no profile matches"
+    fi
+    for id in "${PROFILE_IDS[@]}"; do
+        [[ $id == "$cur" ]] && continue
+        echo "   switch to: ${P_NAME[$id]:-$id} ($(mask "${P_TOKEN[$id]:-none}")) @ $(host_of "${P_BASE[$id]:-}")"
+    done
+    return 0
+}
+
+cmd_list() {
+    local cur id marker
+    cur=$(current_id) || cur=""
+    printf '%-2s %-16s %-28s %-24s %s\n' "" ID NAME HOST KEY
+    for id in "${PROFILE_IDS[@]}"; do
+        [[ $id == "$cur" ]] && marker="*" || marker=" "
+        printf '%-2s %-16s %-28s %-24s %s\n' "$marker" "$id" "${P_NAME[$id]:-}" \
+            "$(host_of "${P_BASE[$id]:-}")" "$([[ -n ${P_TOKEN[$id]:-} ]] && mask "${P_TOKEN[$id]}" || echo "(login)")"
+    done
+}
+
+cmd_swap() {
+    local cur
+    (( ${#PROFILE_IDS[@]} >= 2 )) || die "need 2+ profiles to swap"
+    cur=$(current_id) || cur=""
+    if [[ $cur == "${PROFILE_IDS[0]}" ]]; then
+        apply_profile "${PROFILE_IDS[1]}"
+    else
+        apply_profile "${PROFILE_IDS[0]}"
+    fi
+}
+
+cmd_usage_json() {
+    local out
+    command -v ai-usagebar >/dev/null 2>&1 || { echo '{"entries":[],"error":"ai-usagebar not found"}'; return 0; }
+    out=$(timeout 90 ai-usagebar usage --json 2>/dev/null) || true
+    if [[ -z $out ]]; then
+        echo '{"entries":[],"error":"ai-usagebar returned nothing"}'
+        return 0
+    fi
+    printf '%s' "$out" | jq 'if (type == "object" and has("entries")) then
+        {entries: [.entries[] | {id: .id, plan: .plan,
+                                  short: ([.metrics[]?.value] | join(" · ")),
+                                  percent: ([.metrics[]?.percent] | max // 0),
+                                  error: .error}]}
+        else {entries: [], error: "unexpected ai-usagebar output"} end'
+}
+
+cmd_init() {
+    [[ ! -e $PROFILES || ${1:-} == "--force" ]] || die "$PROFILES already exists (use --force to replace)"
+    mkdir -p "$(dirname "$PROFILES")"
+    cat >"$PROFILES" <<'EOF'
+# Claude Code API profiles for the skal.claude-code-switcher plugin.
+# This file holds secrets: keep it chmod 600 and never commit it.
+#
+# [section-id]         what `skal-ccs use <section-id>` switches to
+#   name               label shown in the bar and menu
+#   base_url           Anthropic-compatible endpoint (omit for official API)
+#   token              API token (omit to fall back to claude login/OAuth)
+#   env.<KEY>          extra env written to ~/.claude/settings.json
+#   usage              optional account marker for usage display (zai)
+
+[zai-plan]
+name = Z.AI coding plan
+base_url = https://api.z.ai/api/anthropic
+token = your-zai-token
+usage = zai
+env.ANTHROPIC_DEFAULT_SONNET_MODEL = glm-5.3
+env.ANTHROPIC_DEFAULT_OPUS_MODEL = glm-5.3
+env.ANTHROPIC_DEFAULT_HAIKU_MODEL = glm-5.3-flash
+
+[another-provider]
+name = Another provider
+base_url = https://provider.example/anthropic
+token = another-token
+
+[anthropic-login]
+name = Official Anthropic (claude login)
+EOF
+    chmod 600 "$PROFILES"
+    echo "wrote example $PROFILES — edit with: skal-ccs edit"
+}
+
+cmd_edit() {
+    [[ -r $PROFILES ]] || cmd_init
+    # $EDITOR may carry flags (e.g. "omarchy-launch-editor --inline").
+    exec ${EDITOR:-nano} "$PROFILES"
+}
+
+cmd_migrate_glm() {
+    [[ -r $GLM_KEYS ]] || die "no keystore at $GLM_KEYS"
+    [[ ! -e $PROFILES || ${1:-} == "--force" ]] || die "$PROFILES exists (use --force to replace)"
+    mkdir -p "$(dirname "$PROFILES")"
+
+    # Model-mapping env lifted from the live settings (they belong to the
+    # z.ai endpoint, so every imported z.ai profile carries them).
+    local -a model_env=()
+    while IFS=$'\t' read -r k v; do
+        model_env+=("env.$k = $v")
+    done < <(jq -r '.env // {} | to_entries
+                    | map(select(.key | startswith("ANTHROPIC_DEFAULT_")))
+                    | .[] | [.key, .value] | @tsv' "$SETTINGS" 2>/dev/null)
+
+    local active_tok
+    active_tok=$(settings_env ANTHROPIC_AUTH_TOKEN)
+
+    (
+        # shellcheck disable=SC1090
+        source "$GLM_KEYS"
+        : "${KEY_1:?KEY_1 unset in keystore}" "${KEY_2:?KEY_2 unset in keystore}"
+        BASE_URL=${BASE_URL:-https://api.z.ai/api/anthropic}
+        NAME_1=${NAME_1:-"key 1"}
+        NAME_2=${NAME_2:-"key 2"}
+
+        emit() { # emit <id> <name> <token>
+            printf '[%s]\nname = "%s"\nbase_url = %s\ntoken = %s\nusage = zai\n' \
+                "$1" "$2" "$BASE_URL" "$3"
+            local line
+            for line in "${model_env[@]:-}"; do [[ -n $line ]] && printf '%s\n' "$line"
+            done
+            printf '\n'
+        }
+
+        echo "# Claude Code API profiles — imported $(date +%F) from $GLM_KEYS"
+        echo "# by skal-ccs migrate-glm. Secrets live here only; keep chmod 600."
+        echo
+        emit zai-1 "$NAME_1" "$KEY_1"
+        emit zai-2 "$NAME_2" "$KEY_2"
+        if [[ -n $active_tok && $active_tok != "$KEY_1" && $active_tok != "$KEY_2" ]]; then
+            echo "# Key found live in settings.json, in neither keystore slot:"
+            emit zai-active "z.ai active (${active_tok:0:8}…)" "$active_tok"
+        fi
+    ) >"$PROFILES"
+    chmod 600 "$PROFILES"
+
+    # Keep the retired-key notes from the old keystore as comments.
+    grep '^#' "$GLM_KEYS" >>"$PROFILES" || true
+    chmod 600 "$SETTINGS" 2>/dev/null || true
+
+    echo "imported keystore into $PROFILES:"
+    load_profiles
+    cmd_list
+}
+
+main() {
+    case ${1:-status} in
+    status)
+        load_profiles
+        [[ ${2:-} == "--json" ]] && status_json || status_human
+        ;;
+    list)
+        load_profiles
+        cmd_list
+        ;;
+    use)
+        [[ -n ${2:-} ]] || die "usage: skal-ccs use <id>"
+        load_profiles
+        apply_profile "$2"
+        ;;
+    swap)
+        load_profiles
+        cmd_swap
+        ;;
+    edit) cmd_edit ;;
+    init) cmd_init "${2:-}" ;;
+    migrate-glm) cmd_migrate_glm "${2:-}" ;;
+    usage)
+        [[ ${2:-} == "--json" ]] || die "usage: skal-ccs usage --json"
+        cmd_usage_json
+        ;;
+    -h | --help | help) usage 0 ;;
+    *) echo "unknown command: $1" >&2; usage 1 ;;
+    esac
+}
+
+main "$@"

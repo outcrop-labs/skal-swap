@@ -220,6 +220,7 @@ Panel {
         anchors.fill: parent
         source: logoProvider
         autoPaddingEnabled: false
+        colorizationEnabled: true
         colorization: 1.0
         colorizationColor: root.foreground
       }
@@ -280,7 +281,8 @@ Panel {
             anchors.fill: parent
             source: headerProvider
             autoPaddingEnabled: false
-            colorization: 1.0
+            colorizationEnabled: true
+        colorization: 1.0
             colorizationColor: Color.muted
           }
         }

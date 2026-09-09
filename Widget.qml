@@ -220,7 +220,6 @@ Panel {
         anchors.fill: parent
         source: logoProvider
         autoPaddingEnabled: false
-        colorizationEnabled: true
         colorization: 1.0
         colorizationColor: root.foreground
       }
@@ -243,17 +242,27 @@ Panel {
     }
   }
 
-  PopupCard {
+  // KeyboardPanel (layer-shell) rather than PopupCard (xdg-popup): the
+  // compositor renders the xdg-popup surface translucent on some setups,
+  // while the layer-shell card paints solid — same as the kit's own
+  // dropdowns. Also brings keyboard focus, so Esc closes the picker.
+  KeyboardPanel {
     id: card
     anchorItem: button
-    bar: root.bar
     owner: root
+    bar: root.bar
     open: root.opened
-    triggerMode: "click"
+    focusTarget: keyCatcher
     contentWidth: Style.space(228)
     contentHeight: fittedContentHeight(menuColumn.implicitHeight, Style.space(340))
 
     onOpenChanged: if (open && !usageProc.running) usageProc.running = true
+
+    PanelKeyCatcher {
+      id: keyCatcher
+      anchors.fill: parent
+      Keys.onEscapePressed: root.close()
+    }
 
     Column {
       id: menuColumn
@@ -281,16 +290,15 @@ Panel {
             anchors.fill: parent
             source: headerProvider
             autoPaddingEnabled: false
-            colorizationEnabled: true
         colorization: 1.0
-            colorizationColor: Color.muted
+            colorizationColor: root.foreground
           }
         }
 
         Text {
           anchors.verticalCenter: parent.verticalCenter
           text: "Claude Code profile"
-          color: Color.muted
+          color: root.foreground
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
@@ -341,10 +349,14 @@ Panel {
             anchors.right: parent.right
             anchors.rightMargin: Style.space(8)
             anchors.verticalCenter: parent.verticalCenter
+            // With usage: "6% · 43%" (session · weekly, every metric the
+            // account reports) — urgent when any window passes 80%.
             text: parent.usage
-              ? (parent.usage.percent != null ? parent.usage.percent + "%" : "")
+              ? (parent.usage.short || (parent.usage.percent != null ? parent.usage.percent + "%" : ""))
               : (parent.prof.token_prefix || "")
-            color: parent.usage && parent.usage.percent > 80 ? Color.urgent : Color.muted
+            color: parent.usage
+              ? (parent.usage.percent > 80 ? Color.urgent : parent.rowFg)
+              : Color.muted
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
           }
@@ -399,16 +411,6 @@ Panel {
           font.pixelSize: Style.font.body
         }
 
-        Text {
-          anchors.right: parent.right
-          anchors.rightMargin: Style.space(8)
-          anchors.verticalCenter: parent.verticalCenter
-          text: "restart sessions after a switch"
-          color: Color.muted
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-        }
-
         MouseArea {
           id: editMouse
           anchors.fill: parent
@@ -419,6 +421,16 @@ Panel {
             root.bar.run("xdg-terminal-exec " + Util.shellQuote(root.cli) + " edit")
           }
         }
+      }
+
+      Text {
+        width: menuColumn.width
+        leftPadding: Style.space(8)
+        text: "restart running sessions to apply a switch"
+        color: Color.muted
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
       }
     }
   }

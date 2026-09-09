@@ -66,6 +66,36 @@ Panel {
     if (!statusProc.running) statusProc.running = true
   }
 
+  function refreshUsage() {
+    if (!usageProc.running) usageProc.running = true
+  }
+
+  // Earliest upcoming window reset across an account's metrics, as an
+  // epoch-ms timestamp (0 when none are known).
+  function nearestReset(metrics) {
+    if (!metrics) return 0
+    var best = 0
+    var now = Date.now()
+    for (var i = 0; i < metrics.length; i++) {
+      var at = metrics[i].reset_at
+      if (!at) continue
+      var t = Date.parse(at)
+      if (t > now && (best === 0 || t < best)) best = t
+    }
+    return best
+  }
+
+  function humanUntil(then) {
+    var s = Math.floor((then - Date.now()) / 1000)
+    if (s <= 0) return ""
+    var d = Math.floor(s / 86400); s -= d * 86400
+    var h = Math.floor(s / 3600); s -= h * 3600
+    var m = Math.floor(s / 60)
+    if (d > 0) return d + "d " + h + "h"
+    if (h > 0) return h + "h " + m + "m"
+    return m + "m"
+  }
+
   function announce(name) {
     // Default app-name is deliberate: omarchy-action is the notification
     // daemon's DND-bypass identity for user-action confirmations.
@@ -164,6 +194,9 @@ Panel {
   // label even then; status --json is a cheap local read.
   Timer { interval: 20000; repeat: true; running: true; onTriggered: root.refreshStatus() }
 
+  // Usage data goes stale while the picker stays open — refetch each minute.
+  Timer { interval: 60000; repeat: true; running: root.opened; onTriggered: root.refreshUsage() }
+
   FileView {
     path: root.settingsPath
     watchChanges: true
@@ -256,7 +289,7 @@ Panel {
     contentWidth: Style.space(228)
     contentHeight: fittedContentHeight(menuColumn.implicitHeight, Style.space(340))
 
-    onOpenChanged: if (open && !usageProc.running) usageProc.running = true
+    onOpenChanged: if (open) root.refreshUsage()
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -309,8 +342,9 @@ Panel {
         model: root.profiles
 
         delegate: Rectangle {
+          id: row
           width: menuColumn.width
-          height: Style.space(30)
+          height: usageInfo ? Style.space(56) : Style.space(30)
           radius: Style.cornerRadius
           color: rowMouse.containsMouse
             ? Util.alpha(rowFg.color, 0.08)
@@ -319,46 +353,85 @@ Panel {
           readonly property color rowFg: root.bar ? root.bar.barForeground : Color.foreground
           readonly property var prof: modelData
           readonly property bool active: root.statusJson && root.statusJson.current === prof.id
-          readonly property var usage: prof.usage_id ? (root.usageById[prof.usage_id] || null) : null
+          readonly property var usageInfo: prof.usage_id ? (root.usageById[prof.usage_id] || null) : null
+          // Progress-bar metrics (max 2), one per window with a percent.
+          readonly property var barMetrics: {
+            if (!usageInfo || !usageInfo.metrics) return []
+            var withPercent = []
+            for (var i = 0; i < usageInfo.metrics.length; i++)
+              if (usageInfo.metrics[i].percent != null) withPercent.push(usageInfo.metrics[i])
+            return withPercent.slice(0, 2)
+          }
+          // Footer line: "GLM Coding Max · resets in 3h 55m" — plan name
+          // plus the nearest upcoming window reset. Hidden when there is
+          // no usage data; key material is never rendered in the menu.
+          readonly property string detailLine: {
+            if (!usageInfo) return ""
+            var parts = []
+            if (usageInfo.plan) parts.push(usageInfo.plan)
+            var reset = root.nearestReset(usageInfo.metrics)
+            if (reset > 0) parts.push("resets in " + root.humanUntil(reset))
+            return parts.join(" · ")
+          }
 
           Text {
             anchors.left: parent.left
             anchors.leftMargin: Style.space(8)
             anchors.verticalCenter: parent.verticalCenter
-            text: parent.active ? "" : "·"
+            visible: row.active
+            text: ""
             color: Color.accent
             font.family: Style.font.family
             font.pixelSize: Style.font.body
           }
 
-          Text {
+          // Left+right anchors give the column a definite width, so the
+          // child Texts can bind width to it without a binding loop.
+          Column {
             anchors.left: parent.left
             anchors.leftMargin: Style.space(26)
-            anchors.right: usageText.left
-            anchors.rightMargin: Style.space(8)
-            anchors.verticalCenter: parent.verticalCenter
-            text: prof.name
-            color: parent.active ? Color.accent : parent.rowFg
-            font.family: Style.font.family
-            font.pixelSize: Style.font.body
-            elide: Text.ElideRight
-          }
-
-          Text {
-            id: usageText
             anchors.right: parent.right
             anchors.rightMargin: Style.space(8)
             anchors.verticalCenter: parent.verticalCenter
-            // With usage: "6% · 43%" (session · weekly, every metric the
-            // account reports) — urgent when any window passes 80%.
-            text: parent.usage
-              ? (parent.usage.short || (parent.usage.percent != null ? parent.usage.percent + "%" : ""))
-              : (parent.prof.token_prefix || "")
-            color: parent.usage
-              ? (parent.usage.percent > 80 ? Color.urgent : parent.rowFg)
-              : Color.muted
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
+            spacing: Style.space(1)
+
+            Text {
+              width: parent.width
+              text: row.prof.name
+              color: row.active ? Color.accent : row.rowFg
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+              elide: Text.ElideRight
+            }
+
+            // One thin progress bar per usage window (session, weekly),
+            // stacked under the name; urgent fill past 80%.
+            Column {
+              id: barStack
+              width: parent.width
+              spacing: Style.space(2)
+              visible: row.barMetrics.length > 0
+
+              Repeater {
+                model: row.barMetrics
+
+                UsageBar {
+                  width: barStack.width
+                  fraction: Util.clamp((modelData.percent || 0) / 100, 0, 1)
+                  warn: (modelData.percent || 0) > 80
+                }
+              }
+            }
+
+            Text {
+              width: parent.width
+              visible: text !== ""
+              text: row.detailLine
+              color: Color.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
+            }
           }
 
           MouseArea {
@@ -432,6 +505,25 @@ Panel {
         font.pixelSize: Style.font.caption
         elide: Text.ElideRight
       }
+    }
+  }
+
+  // Thin progress meter for one usage window (session, weekly). Track in
+  // muted, fill in the accent — urgent once the window passes 80%.
+  component UsageBar: Rectangle {
+    property real fraction: 0
+    property bool warn: false
+
+    width: Style.space(28)
+    height: Math.max(3, Style.space(2))
+    radius: height / 2
+    color: Util.alpha(Color.muted, 0.4)
+
+    Rectangle {
+      width: Math.max(parent.height, Math.round(parent.width * parent.fraction))
+      height: parent.height
+      radius: parent.radius
+      color: parent.warn ? Color.urgent : Color.accent
     }
   }
 }

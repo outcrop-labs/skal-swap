@@ -271,18 +271,30 @@ cmd_swap() {
     fi
 }
 
+usage_bin() { # <path of the ai-usagebar to use, or fail>
+    # ~/.local/bin first: it is where a user-level multi-account shim lives,
+    # and GUI-service PATHs often put ~/.cargo/bin ahead of ~/.local/bin —
+    # PATH order alone would bypass the shim and lose the per-key accounts.
+    local p
+    for p in "$HOME/.local/bin/ai-usagebar" "$(command -v ai-usagebar 2>/dev/null || true)" "$HOME/.cargo/bin/ai-usagebar"; do
+        [[ -n $p && -x $p ]] && { echo "$p"; return 0; }
+    done
+    return 1
+}
+
 cmd_usage_json() {
-    local out
-    command -v ai-usagebar >/dev/null 2>&1 || { echo '{"entries":[],"error":"ai-usagebar not found"}'; return 0; }
-    out=$(timeout 90 ai-usagebar usage --json 2>/dev/null) || true
+    local out bin
+    bin=$(usage_bin) || { echo '{"entries":[],"error":"ai-usagebar not found"}'; return 0; }
+    out=$(timeout 90 "$bin" usage --json 2>/dev/null) || true
     if [[ -z $out ]]; then
         echo '{"entries":[],"error":"ai-usagebar returned nothing"}'
         return 0
     fi
     printf '%s' "$out" | jq 'if (type == "object" and has("entries")) then
-        {entries: [.entries[] | {id: .id, plan: .plan,
+        {entries: [.entries[] | {id: .id, plan: .plan, status: .status,
                                   short: ([.metrics[]?.value] | join(" · ")),
                                   percent: ([.metrics[]?.percent] | max // 0),
+                                  metrics: [.metrics[]? | {label, value, percent, detail, reset_at, severity}],
                                   error: .error}]}
         else {entries: [], error: "unexpected ai-usagebar output"} end'
 }

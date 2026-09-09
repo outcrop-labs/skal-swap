@@ -6,6 +6,17 @@ Claude Code is running on, and switches between any number of configured
 profiles — API keys, Anthropic-compatible endpoints, model mappings, or back
 to the official Claude OAuth login — from a popup in the bar.
 
+## Why
+
+Claude Code is still the best dev harness around — the agent loop, the tooling,
+the ergonomics. But being married to one model or vendor is a choice we don't
+want to make: we constantly run other models (GLM coding plans, other
+Anthropic-compatible providers) *through* Claude Code. The friction was never
+the models — it was the key juggling: hand-editing `settings.json`, keeping
+model mappings straight, wondering which key is live. This plugin treats every
+key/endpoint as a named profile and makes switching a menubar click, with each
+key's usage right there so you know which plan to burn next.
+
 The bar item shows the Claude logomark (tinted to your theme) with the active
 profile name. Click for the profile picker, middle-click to quick-swap between
 your two most-used profiles. Every switch announces itself with a toast.

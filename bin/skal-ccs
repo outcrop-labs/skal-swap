@@ -147,7 +147,7 @@ icon_of() { # icon_of <profile-id>
     api.moonshot.ai | api.moonshot.cn | kimi.com | api.kimi.com) echo kimi ;;
     api.x.ai | x.ai) echo x ;;
     api.minimax.io | minimax.io | api.minimaxi.com) echo minimax ;;
-    dashscope.aliyuncs.com | aliyuncs.com) echo qwen ;;
+    *aliyuncs.com | *dashscope*) echo qwen ;;
     api.mistral.ai | mistral.ai) echo mistralai ;;
     api.together.xyz) echo huggingface ;;
     huggingface.co | api.huggingface.co) echo huggingface ;;

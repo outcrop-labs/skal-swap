@@ -23,5 +23,15 @@ name = Another provider
 base_url = https://provider.example/anthropic
 token = another-token
 
+# Alibaba Cloud Model Studio token plan (regional gateway; use the host and
+# model ids your plan entitles):
+[alibaba-qwen]
+name = Alibaba Qwen
+base_url = https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic
+token = sk-sp-…
+env.ANTHROPIC_DEFAULT_SONNET_MODEL = qwen3.8-flash
+env.ANTHROPIC_DEFAULT_OPUS_MODEL = qwen3.8-max
+env.ANTHROPIC_DEFAULT_HAIKU_MODEL = qwen3.8-flash
+
 [anthropic-login]
 name = Claude (OAuth)

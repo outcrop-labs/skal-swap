@@ -134,6 +134,29 @@ repo). As with key switches: switch while no claude sessions are running —
 running sessions keep their in-memory tokens and would write them back on
 exit.
 
+### Alibaba Cloud token plans (Qwen, DeepSeek, …)
+
+Alibaba Cloud's Model Studio token plans expose an Anthropic-compatible
+gateway; a profile is just the endpoint plus the plan's model ids:
+
+```ini
+[alibaba-qwen]
+name = Alibaba Qwen
+base_url = https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic
+token = sk-sp-…
+env.ANTHROPIC_DEFAULT_SONNET_MODEL = qwen3.8-flash
+env.ANTHROPIC_DEFAULT_OPUS_MODEL = qwen3.8-max
+env.ANTHROPIC_DEFAULT_HAIKU_MODEL = qwen3.8-flash
+```
+
+Use the regional host your key belongs to (`ap-southeast-1` above; the
+pay-as-you-go Model Studio endpoint is `dashscope.aliyuncs.com/apps/anthropic`
+or `dashscope-intl…` for international keys). The gateway is picky about
+model ids and entitlements — a `Model not exist` response means the id is
+wrong for that gateway, `Access to model denied` means the id exists but
+your plan tier does not include it. A `icon = deepseek` style override picks
+the row's provider mark when one plan serves several model families.
+
 Bar widget settings (inline on the shell.json layout entry or via your bar's
 settings UI): `icon` (`Logo` / `Glyph` / `None`), `labelStyle` (`Name` /
 `Host` / `Icon`), `glyph` (Nerd Font glyph for `Glyph` mode and toasts).

@@ -4,9 +4,6 @@ Swap the model behind [Claude Code](https://claude.com/claude-code) from your
 [Omarchy](https://omarchy.org) bar. Shows the key, endpoint and model you're
 actually on. Click to change any of it.
 
-Installs as the bar plugin `skal.swap`. That's it — nothing gets dropped onto
-your PATH.
-
 ## Why
 
 Claude Code is a great harness. The agent loop, the tooling, the ergonomics,

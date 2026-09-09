@@ -7,18 +7,18 @@ import qs.Ui
 
 // Claude Code API profile switcher. Shows the active key/endpoint profile,
 // click to pick another from the popup, middle-click for a quick swap.
-// The companion CLI (bin/skal-ccs, resolved relative to this file) owns all
+// The companion CLI (bin/skal-swap, resolved relative to this file) owns all
 // state: it rewrites the managed ANTHROPIC_* env in ~/.claude/settings.json;
-// this widget only reads `skal-ccs status --json` and watches the two files
+// this widget only reads `skal-swap status --json` and watches the two files
 // involved (settings.json + profiles.conf), so it stays in sync no matter
 // what changed them — menu click, terminal, or manual edit.
 //
 // Settings live inline on the bar layout entry in shell.json:
-//   { "id": "skal.claude-code-switcher", "labelStyle": "Name", "glyph": "󰌆" }
+//   { "id": "skal.swap", "labelStyle": "Name", "glyph": "󰌆" }
 //
 // IPC is deliberately not registered (manageIpc: false): a bar widget is
 // instantiated once per monitor and only one copy could own the target —
-// the CLI/hotkey path (`skal-ccs swap`) is the machine-wide interface.
+// the CLI/hotkey path (`skal-swap swap`) is the machine-wide interface.
 Panel {
   id: root
 
@@ -26,12 +26,12 @@ Panel {
 
   readonly property string home: Quickshell.env("HOME") || ""
   readonly property string settingsPath: home + "/.claude/settings.json"
-  readonly property string profilesPath: home + "/.config/skal.claude-code-switcher/profiles.conf"
+  readonly property string profilesPath: home + "/.config/skal.swap/profiles.conf"
   // Resolve the CLI next to this QML file so the plugin works straight
   // after clone, with no PATH install; fall back to a PATH lookup.
   readonly property string cli: {
-    var u = Qt.resolvedUrl("bin/skal-ccs").toString()
-    return u.indexOf("file://") === 0 ? u.substring(7) : "skal-ccs"
+    var u = Qt.resolvedUrl("bin/skal-swap").toString()
+    return u.indexOf("file://") === 0 ? u.substring(7) : "skal-swap"
   }
 
   property string glyph: String(setting("glyph", "󰌆"))

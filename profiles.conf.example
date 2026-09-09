@@ -1,8 +1,8 @@
-# Claude Code API profiles for the skal.claude-code-switcher plugin.
-# Copy to ~/.config/skal.claude-code-switcher/profiles.conf (chmod 600) or
-# just run: skal-ccs init
+# Claude Code API profiles for the skal.swap plugin.
+# Copy to ~/.config/skal.swap/profiles.conf (chmod 600) or
+# just run: skal-swap init
 #
-# [section-id]         what `skal-ccs use <section-id>` switches to
+# [section-id]         what `skal-swap use <section-id>` switches to
 #   name               label shown in the bar and menu
 #   base_url           Anthropic-compatible endpoint (omit for official API)
 #   token              API token (omit to fall back to claude login/OAuth)

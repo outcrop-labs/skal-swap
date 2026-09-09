@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# skal-ccs — Claude Code API profile switcher.
+# skal-swap — Claude Code API profile switcher.
 #
-# Companion CLI of the skal.claude-code-switcher Omarchy bar plugin.
+# Companion CLI of the skal.swap Omarchy bar plugin.
 # Profiles (name / base_url / token / extra env such as model mappings) live
 # in an INI-style file OUTSIDE the plugin directory, so secrets never end up
 # in a published repo:
 #
-#     ~/.config/skal.claude-code-switcher/profiles.conf   (chmod 600)
+#     ~/.config/skal.swap/profiles.conf   (chmod 600)
 #
 #     [zai-plan-a]
 #     name = Z.AI plan A
@@ -36,12 +36,12 @@
 
 set -euo pipefail
 
-PROFILES="${CCS_PROFILES:-$HOME/.config/skal.claude-code-switcher/profiles.conf}"
+PROFILES="${CCS_PROFILES:-$HOME/.config/skal.swap/profiles.conf}"
 SETTINGS="${CCS_SETTINGS:-$HOME/.claude/settings.json}"
 CREDS="${CCS_CREDS:-$HOME/.claude/.credentials.json}"
 CLAUDE_JSON="${CCS_CLAUDE_JSON:-$HOME/.claude.json}"
-STATE_DIR="${CCS_STATE:-$HOME/.local/state/skal.claude-code-switcher}"
-CRED_DIR="${CCS_CRED_DIR:-$HOME/.config/skal.claude-code-switcher/credentials}"
+STATE_DIR="${CCS_STATE:-$HOME/.local/state/skal.swap}"
+CRED_DIR="${CCS_CRED_DIR:-$HOME/.config/skal.swap/credentials}"
 OAUTH_STATE="$STATE_DIR/active-oauth"
 GLM_KEYS="${GLM_KEYS:-$HOME/.config/glm-keys.env}"
 
@@ -66,12 +66,12 @@ declare -A P_MODEL=() P_MODELS_URL=() P_BEHAVES_AS=()
 declare -a PROFILE_IDS=()
 declare -a ENV_LINES=()
 
-die() { echo "skal-ccs: $*" >&2; exit 1; }
+die() { echo "skal-swap: $*" >&2; exit 1; }
 mask() { printf '%s…' "${1:0:8}"; }
 
 usage() {
     cat <<'EOF'
-usage: skal-ccs [command]
+usage: skal-swap [command]
 
   status          which profile Claude Code is on (default)
   status --json   {current, current_known, profiles[]} for the bar widget
@@ -92,7 +92,7 @@ usage: skal-ccs [command]
                   [--max-age N] serve the disk cache under N seconds old
                   (default 300; 0 = always fetch)
 
-profiles : ~/.config/skal.claude-code-switcher/profiles.conf
+profiles : ~/.config/skal.swap/profiles.conf
 settings : ~/.claude/settings.json (env.ANTHROPIC_*, model, modelPicker)
 EOF
     exit "${1:-0}"
@@ -124,7 +124,7 @@ parse_profiles() { # emits: id \t key \t value
 }
 
 load_profiles() {
-    [[ -r $PROFILES ]] || die "no profiles file at $PROFILES — start with: skal-ccs init"
+    [[ -r $PROFILES ]] || die "no profiles file at $PROFILES — start with: skal-swap init"
     local sec key val
     local -A seen=()
     while IFS=$'\t' read -r sec key val; do
@@ -140,7 +140,7 @@ load_profiles() {
             icon) P_ICON[$sec]=$val ;;
             oauth) [[ $val == "true" || $val == "yes" || $val == "1" ]] && P_OAUTH[$sec]=1 ;;
             env.*) ENV_LINES+=("$sec"$'\t'"${key#env.}"$'\t'"$val") ;;
-            *) echo "skal-ccs: ignoring unknown key '$key' in [$sec]" >&2 ;;
+            *) echo "skal-swap: ignoring unknown key '$key' in [$sec]" >&2 ;;
         esac
     done < <(parse_profiles)
 }
@@ -214,8 +214,8 @@ cmd_models() {
             *) id=$a ;;
         esac
     done
-    [[ -n $id ]] || { id=$(current_id) || die "no active profile — name one: skal-ccs models <id>"; }
-    [[ -n ${P_NAME[$id]+x} ]] || die "no profile '$id' (see: skal-ccs list)"
+    [[ -n $id ]] || { id=$(current_id) || die "no active profile — name one: skal-swap models <id>"; }
+    [[ -n ${P_NAME[$id]+x} ]] || die "no profile '$id' (see: skal-swap list)"
     local tsv chosen
     tsv=$(models_cached "$id" "$refresh")
     chosen=$(model_of "$id")
@@ -407,7 +407,7 @@ sync_back() {
     if [[ -f $CREDS ]]; then
         live_fp=$(live_fingerprint)
         if [[ -n $live_fp && -n $stored_fp && $live_fp != "$stored_fp" ]]; then
-            echo "skal-ccs: live login ($live_fp) is not the one stored for [$cur] — skipping sync-back" >&2
+            echo "skal-swap: live login ($live_fp) is not the one stored for [$cur] — skipping sync-back" >&2
             return 0
         fi
         local tmp
@@ -427,7 +427,7 @@ sync_back() {
 load_oauth() { # load_oauth <id>
     local store
     store=$(store_path "$1")
-    [[ -f $store ]] || die "no OAuth store for [$1] — run: skal-ccs oauth-add $1"
+    [[ -f $store ]] || die "no OAuth store for [$1] — run: skal-swap oauth-add $1"
     jq -e '.credentials != null' "$store" >/dev/null 2>&1 || die "OAuth store for [$1] has no credentials"
 
     local tmp
@@ -444,7 +444,7 @@ load_oauth() { # load_oauth <id>
 }
 
 cmd_oauth_add() { # cmd_oauth_add <id> [--name N] [--force]
-    local id=${1:?usage: skal-ccs oauth-add <id> [--name N]}
+    local id=${1:?usage: skal-swap oauth-add <id> [--name N]}
     shift
     local name="" force=0
     while [[ $# -gt 0 ]]; do
@@ -480,7 +480,7 @@ cmd_oauth_add() { # cmd_oauth_add <id> [--name N] [--force]
     chmod 600 "$(store_path "$id")"
     write_oauth_state "$id"
     echo "stored OAuth login as [$id] (fingerprint ${fp:0:8}…)"
-    echo "to add another account: claude /login the other one, then: skal-ccs oauth-add <id-2>"
+    echo "to add another account: claude /login the other one, then: skal-swap oauth-add <id-2>"
 }
 
 # Same label rule as the ai-usagebar multi-account shim, so usage ids match.
@@ -576,7 +576,7 @@ rewrite() { # rewrite <file> <jq-args…> (filter last) — atomic, keeps inode/
         rc=0
     else
         rc=$?
-        echo "skal-ccs: jq failed on $file — left untouched" >&2
+        echo "skal-swap: jq failed on $file — left untouched" >&2
     fi
     rm -f "$tmp"
     return "$rc"
@@ -584,7 +584,7 @@ rewrite() { # rewrite <file> <jq-args…> (filter last) — atomic, keeps inode/
 
 apply_profile() { # apply_profile <id>
     local id=$1
-    [[ -n ${P_NAME[$id]+x} ]] || die "no profile '$id' (see: skal-ccs list)"
+    [[ -n ${P_NAME[$id]+x} ]] || die "no profile '$id' (see: skal-swap list)"
     [[ -f $SETTINGS ]] || die "no $SETTINGS — run claude once first"
 
     # Leaving (or re-applying) an OAuth profile: persist the live session's
@@ -723,7 +723,7 @@ usage_bin() { # <path of the ai-usagebar to use, or fail>
 }
 
 usage_cache() { # <report-json> — store; called with no args = print cached
-    local cache="${CCS_STATE:-$HOME/.local/state/skal.claude-code-switcher}/usage.json"
+    local cache="${CCS_STATE:-$HOME/.local/state/skal.swap}/usage.json"
     if [[ $# -eq 0 ]]; then
         [[ -r $cache ]] && cat "$cache"
         return 0
@@ -740,7 +740,7 @@ cmd_usage_json() { # args: --json [--max-age N]  (N=0 always fetches)
     local max_age=300
     case ${1:-} in
     --json) shift ;;
-    *) die "usage: skal-ccs usage --json [--max-age N]" ;;
+    *) die "usage: skal-swap usage --json [--max-age N]" ;;
     esac
     if [[ ${1:-} == "--max-age" ]]; then
         [[ ${2:-} =~ ^[0-9]+$ ]] || die "--max-age needs a number"
@@ -790,10 +790,10 @@ cmd_init() {
     [[ ! -e $PROFILES || ${1:-} == "--force" ]] || die "$PROFILES already exists (use --force to replace)"
     mkdir -p "$(dirname "$PROFILES")"
     cat >"$PROFILES" <<'EOF'
-# Claude Code API profiles for the skal.claude-code-switcher plugin.
+# Claude Code API profiles for the skal.swap plugin.
 # This file holds secrets: keep it chmod 600 and never commit it.
 #
-# [section-id]         what `skal-ccs use <section-id>` switches to
+# [section-id]         what `skal-swap use <section-id>` switches to
 #   name               label shown in the bar and menu
 #   base_url           Anthropic-compatible endpoint (omit for official API)
 #   token              API token (omit to fall back to claude login/OAuth)
@@ -815,7 +815,7 @@ token = another-token
 name = Official Anthropic (claude login)
 EOF
     chmod 600 "$PROFILES"
-    echo "wrote example $PROFILES — edit with: skal-ccs edit"
+    echo "wrote example $PROFILES — edit with: skal-swap edit"
 }
 
 cmd_edit() {
@@ -847,7 +847,7 @@ cmd_migrate_glm() {
         }
 
         echo "# Claude Code API profiles — imported $(date +%F) from $GLM_KEYS"
-        echo "# by skal-ccs migrate-glm. Secrets live here only; keep chmod 600."
+        echo "# by skal-swap migrate-glm. Secrets live here only; keep chmod 600."
         echo
         emit zai-1 "$NAME_1" "$KEY_1"
         emit zai-2 "$NAME_2" "$KEY_2"
@@ -878,11 +878,11 @@ main() {
         cmd_list
         ;;
     use)
-        [[ -n ${2:-} ]] || die "usage: skal-ccs use <id> [--model <model-id>]"
+        [[ -n ${2:-} ]] || die "usage: skal-swap use <id> [--model <model-id>]"
         load_profiles
         if [[ ${3:-} == "--model" ]]; then
-            [[ -n ${4:-} ]] || die "usage: skal-ccs use <id> --model <model-id>"
-            [[ -n ${P_NAME[$2]+x} ]] || die "no profile '$2' (see: skal-ccs list)"
+            [[ -n ${4:-} ]] || die "usage: skal-swap use <id> --model <model-id>"
+            [[ -n ${P_NAME[$2]+x} ]] || die "no profile '$2' (see: skal-swap list)"
             set_model_for "$2" "$4"
         fi
         apply_profile "$2"

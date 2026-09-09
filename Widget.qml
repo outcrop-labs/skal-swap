@@ -582,6 +582,42 @@ Panel {
         font.pixelSize: Style.font.caption
         elide: Text.ElideRight
       }
+
+      // Alibaba token plans publish no usage API — the console is the only
+      // place quota exists, so surface a link when such a profile is listed.
+      Rectangle {
+        width: menuColumn.width
+        height: hasAlibaba ? Style.space(26) : 0
+        visible: height > 0
+        radius: Style.cornerRadius
+        color: consoleMouse.containsMouse ? Util.alpha(Color.muted, 0.12) : "transparent"
+
+        readonly property bool hasAlibaba: {
+          for (var i = 0; i < root.profiles.length; i++)
+            if ((root.profiles[i].host || "").indexOf("maas.aliyuncs.com") >= 0 ||
+                (root.profiles[i].host || "").indexOf("dashscope") >= 0) return true
+          return false
+        }
+
+        Text {
+          anchors.left: parent.left
+          anchors.leftMargin: Style.space(8)
+          anchors.verticalCenter: parent.verticalCenter
+          text: "Alibaba token-plan quota  ↗"
+          color: Color.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+
+        MouseArea {
+          id: consoleMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: Util.execDetached(
+            "xdg-open https://bailian.console.aliyun.com/?#/efm/subscription/overview")
+        }
+      }
     }
   }
 

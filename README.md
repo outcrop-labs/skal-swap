@@ -50,8 +50,9 @@ opencode zen** — each key is fetched under its own isolated account. For a
 provider you only have one profile on, usage attaches automatically with no
 marker at all. Claude OAuth usage follows the live login: the active OAuth
 profile shows the session/weekly windows of whatever account is actually
-logged in. Providers without a public usage API (e.g. Alibaba's token-plan
-gateways) show no bars. All of this rides on
+logged in. Providers without a public usage API (Alibaba's token-plan
+gateways publish none — no endpoint, no headers) show a console link
+instead. All of this rides on
 [ai-usagebar](https://github.com/akitaonrails/ai-usagebar) being installed;
 without it the switcher works fine, just without usage readouts.
 

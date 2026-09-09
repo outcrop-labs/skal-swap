@@ -25,14 +25,12 @@ So: this. Every key and endpoint is a profile. Switching is a click. The
 models come from the provider instead of from your memory. The usage bars
 tell you which plan you're closest to torching.
 
-Mostly though, it's a laugh. Swapping the model underneath a harness you know
-cold is a genuinely odd experience — same tools, same prompts, same loop,
-different brain at the wheel. And because nothing else moved, you notice
-everything. This one plans like an architect and writes code like it's 4am.
-That one is blunt to the point of rude and never wastes a token. The cheap
-one keeps quietly nailing refactors you'd have thrown the expensive model at.
-Turns out "which model is best" is the wrong question and "best at what" is
-the right one. Keep a few around. Use whichever suits the job.
+It's also just weird, in a good way. Same tools, same prompts, same loop,
+different model driving. Nothing else changed, so the differences show up
+fast: one of them one-shots a refactor you'd assumed needed the expensive
+option, another writes something you'd never ship with total confidence.
+After a week of that you stop asking which model is best and start keeping a
+few around for different jobs.
 
 The bar item shows the Claude logomark (tinted to your theme) and the active
 profile. Click for the picker, middle-click to bounce between your two

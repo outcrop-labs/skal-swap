@@ -12,13 +12,34 @@ Installs as the plugin `skal.swap`, with a companion CLI, `skal-swap`.
 
 Claude Code is still the best dev harness around — the agent loop, the tooling,
 the ergonomics. But being married to one model or vendor is a choice we don't
-want to make: we constantly run other models (GLM coding plans, other
-Anthropic-compatible providers) *through* Claude Code. The friction was never
-the models — it was the key juggling: hand-editing `settings.json`, chasing
-which model ids an endpoint actually serves, wondering which key is live. This
-plugin treats every key/endpoint as a named profile and makes switching a
-menubar click, with each key's usage right there so you know which plan to
+want to make: we constantly run other models (GLM coding plans, Qwen and
+DeepSeek token plans, other Anthropic-compatible providers) *through* Claude
+Code.
+
+Plenty of people already do this by hand. You export `ANTHROPIC_BASE_URL`,
+paste a key into `settings.json`, look up which model ids that endpoint
+actually serves, and then undo the whole thing when you want Claude back —
+while never being quite sure which key is live. It works, and it's tedious
+enough that most people set it up once and then stop experimenting. Skal Swap
+is the Omarchy-native version of that ritual: every key and endpoint is a
+named profile, switching is a click in the bar, each provider's models are
+discovered rather than memorised, and the usage bars tell you which plan to
 burn next.
+
+The point is to crack Claude Code open. It's a superb harness that happens to
+ship pointed at one vendor; there's no reason it has to stay that way. Point
+it wherever you like — a coding plan, a token plan, an aggregator, a proxy,
+something running on your own hardware — and use it however suits you.
+
+And it's genuinely *fun*. Swapping the model underneath a harness you already
+know well is a strange and clarifying experience: same tools, same prompts,
+same agent loop, different mind at the wheel. Because everything else is held
+constant, the differences jump out immediately — one model plans beautifully
+and writes mediocre code, another is blunt but never wastes a token, another
+keeps surprising you on the gnarly refactor you'd assumed needed the
+expensive option. Building with a few of them, picking whichever suits the
+task in front of you, is a better way to work than picking one and never
+looking up. It's also just a good time.
 
 The bar item shows the Claude logomark (tinted to your theme) with the active
 profile name. Click for the profile picker, middle-click to quick-swap between

@@ -1,108 +1,102 @@
 # Skal Swap
 
-Swap the provider behind [Claude Code](https://claude.com/claude-code) from
-the [Omarchy](https://omarchy.org) menubar. Shows which key, endpoint and
-model Claude Code is running on, and switches between any number of
-configured providers — API keys, Anthropic-compatible endpoints, their
-models, or back to the official Claude OAuth login — from a popup in the bar.
+Swap the model behind [Claude Code](https://claude.com/claude-code) from your
+[Omarchy](https://omarchy.org) bar. Shows the key, endpoint and model you're
+actually on. Click to change any of it.
 
-Installs as the plugin `skal.swap`, with a companion CLI, `skal-swap`.
+Installs as the bar plugin `skal.swap`. That's it — nothing gets dropped onto
+your PATH.
 
 ## Why
 
-Claude Code is still the best dev harness around — the agent loop, the tooling,
-the ergonomics. But being married to one model or vendor is a choice we don't
-want to make: we constantly run other models (GLM coding plans, Qwen and
-DeepSeek token plans, other Anthropic-compatible providers) *through* Claude
-Code.
+Claude Code is a great harness. The agent loop, the tooling, the ergonomics,
+all of it. It also ships welded to one vendor, which is fine right up until
+the moment you'd like to run something else through it.
 
-Plenty of people already do this by hand. You export `ANTHROPIC_BASE_URL`,
-paste a key into `settings.json`, look up which model ids that endpoint
-actually serves, and then undo the whole thing when you want Claude back —
-while never being quite sure which key is live. It works, and it's tedious
-enough that most people set it up once and then stop experimenting. Skal Swap
-is the Omarchy-native version of that ritual: every key and endpoint is a
-named profile, switching is a click in the bar, each provider's models are
-discovered rather than memorised, and the usage bars tell you which plan to
-burn next.
+Plenty of us already do, by hand. You know the routine: export
+`ANTHROPIC_BASE_URL`, paste a key into `settings.json`, go digging for which
+model ids that endpoint will actually answer to, then unpick the whole lot
+when you want Claude back. Somewhere in there you lose track of which key is
+live. It works fine! It's also tedious enough that most people wire it up
+once and then never touch it again, which rather defeats the point of having
+options.
 
-The point is to crack Claude Code open. It's a superb harness that happens to
-ship pointed at one vendor; there's no reason it has to stay that way. Point
-it wherever you like — a coding plan, a token plan, an aggregator, a proxy,
-something running on your own hardware — and use it however suits you.
+So: this. Every key and endpoint is a profile. Switching is a click. The
+models come from the provider instead of from your memory. The usage bars
+tell you which plan you're closest to torching.
 
-And it's genuinely *fun*. Swapping the model underneath a harness you already
-know well is a strange and clarifying experience: same tools, same prompts,
-same agent loop, different mind at the wheel. Because everything else is held
-constant, the differences jump out immediately — one model plans beautifully
-and writes mediocre code, another is blunt but never wastes a token, another
-keeps surprising you on the gnarly refactor you'd assumed needed the
-expensive option. Building with a few of them, picking whichever suits the
-task in front of you, is a better way to work than picking one and never
-looking up. It's also just a good time.
+Mostly though, it's a laugh. Swapping the model underneath a harness you know
+cold is a genuinely odd experience — same tools, same prompts, same loop,
+different brain at the wheel. And because nothing else moved, you notice
+everything. This one plans like an architect and writes code like it's 4am.
+That one is blunt to the point of rude and never wastes a token. The cheap
+one keeps quietly nailing refactors you'd have thrown the expensive model at.
+Turns out "which model is best" is the wrong question and "best at what" is
+the right one. Keep a few around. Use whichever suits the job.
 
-The bar item shows the Claude logomark (tinted to your theme) with the active
-profile name. Click for the profile picker, middle-click to quick-swap between
-your two most-used profiles. Every switch announces itself with a toast.
+The bar item shows the Claude logomark (tinted to your theme) and the active
+profile. Click for the picker, middle-click to bounce between your two
+most-used profiles. Every switch fires a toast so you know what just changed.
 
 ## Features
 
-- Bar widget with the active profile at a glance (logo + name, host, or icon
-  only — your choice)
-- Popup picker with the active profile marked and optional per-account usage
-  readouts ([ai-usagebar](https://github.com/akitaonrails/ai-usagebar) when
-  installed; z.ai accounts show session/weekly percentages)
-- Any provider with an Anthropic-compatible endpoint (z.ai, proxies, gateways,
-  …) alongside the official Anthropic API
-- A token-less profile returns Claude Code to its normal `claude` OAuth login
-- Clean env switching: applying a profile clears every managed
-  `ANTHROPIC_*` key first, then writes the profile's — no stale model
-  mappings or endpoints left behind
-- `~/.claude/settings.json` is rewritten atomically and everything outside
-  `env.ANTHROPIC_*` is untouched (file mode tightened to 600); Claude Code's
-  cached model id (`clientDataCacheSlots` in `~/.claude.json`) is dropped so a
-  stale Anthropic id can't leak onto a third-party endpoint
-- Stays in sync no matter what changed the profile — menu, terminal CLI,
-  keybinding, or a manual edit (file watchers + slow poll)
-- **Quota/usage across the board** — progress bars and percentages per
-  account, per key where the provider allows it (see below)
-- Models discovered from each endpoint's own catalogue and offered in
-  Claude Code's `/model` picker, so one profile isn't one model
-- Companion CLI: `skal-swap status | list | use <id> | models | swap | edit | init`
+- Bar widget showing the active profile at a glance (logo + name, host, or
+  just the icon)
+- Popup picker with the active profile marked, plus per-account usage
+  readouts if you have [ai-usagebar](https://github.com/akitaonrails/ai-usagebar)
+  (z.ai accounts get session/weekly percentages)
+- Works with any Anthropic-compatible endpoint — z.ai, proxies, gateways,
+  whatever — alongside the official Anthropic API
+- A profile with no token drops you back to your normal `claude` OAuth login
+- Switching is clean: every managed `ANTHROPIC_*` key is cleared first, then
+  the new profile's are written, so nothing stale survives the swap
+- Models are pulled from each endpoint's own catalogue and handed to Claude
+  Code's `/model` picker, so a profile isn't stuck on one model
+- Keeps up no matter what changed the profile — the menu, a keybind, the
+  bundled script, or you editing the file by hand
+- **Usage bars across the board**, per account and per key where the provider
+  allows it (details below)
 
 ### Usage coverage
 
-Per-key usage (add `usage = <vendor>` to a profile) works for **z.ai,
-OpenRouter, DeepSeek, Kimi/Moonshot, Kilo, Novita, xAI (grok), MiniMax and
-opencode zen** — each key is fetched under its own isolated account. For a
-provider you only have one profile on, usage attaches automatically with no
-marker at all. Claude OAuth usage follows the live login: the active OAuth
-profile shows the session/weekly windows of whatever account is actually
-logged in. Providers without a public usage API (Alibaba's token-plan
-gateways publish none — no endpoint, no headers) show a console link
-instead. All of this rides on
-[ai-usagebar](https://github.com/akitaonrails/ai-usagebar) being installed;
-without it the switcher works fine, just without usage readouts.
+Per-key usage (`usage = <vendor>` on a profile) works for **z.ai, OpenRouter,
+DeepSeek, Kimi/Moonshot, Kilo, Novita, xAI (grok), MiniMax and opencode
+zen** — each key gets fetched under its own account. If you've only got one
+profile on a provider, usage attaches by itself and you can skip the marker.
+Claude OAuth usage follows whichever account is actually logged in. Providers
+with no public usage API get a console link instead — Alibaba's token-plan
+gateways publish nothing at all, no endpoint, no headers, so a link is the
+best anyone can do. All of this needs
+[ai-usagebar](https://github.com/akitaonrails/ai-usagebar) installed; without
+it everything else still works, you just don't get the bars.
 
 ## Install
 
 ```bash
 omarchy plugin add https://github.com/outcrop-labs/skal-swap.git --yes
 omarchy plugin enable skal.swap --section left
-
-# CLI on PATH (terminal use, keybindings, the Edit profiles menu entry):
-ln -sfn ~/.config/omarchy/plugins/skal.swap/bin/skal-swap ~/.local/bin/skal-swap
-
-# Create the profiles file with a commented example, then put your keys in it:
-skal-swap edit
 ```
 
-Profiles live in `~/.config/skal.swap/profiles.conf` (chmod 600) — outside the
-plugin directory, so secrets never end up in a repo or an update. The widget
-reads it on the fly; no shell restart needed.
+Then put your keys in:
 
-Optional keybinding for a quick swap between the first two profiles (example
-uses SUPER+ALT+K in `~/.config/hypr/bindings.lua`):
+```bash
+~/.config/omarchy/plugins/skal.swap/bin/skal-swap edit
+```
+
+Profiles live in `~/.config/skal.swap/profiles.conf` (chmod 600), outside the
+plugin directory, so your keys don't end up in a repo or get blown away by an
+update. The widget re-reads it on the fly.
+
+The plugin ships a script at `bin/skal-swap` — it's what the widget calls, and
+you can run it directly as above. If you'd rather have it on your PATH, that's
+your call, not something the install does to you:
+
+```bash
+ln -sfn ~/.config/omarchy/plugins/skal.swap/bin/skal-swap ~/.local/bin/skal-swap
+```
+
+Optional keybind to bounce between your first two profiles (SUPER+ALT+K, in
+`~/.config/hypr/bindings.lua`):
 
 ```lua
 o.bind("SUPER + ALT + K", "Claude Code key swap", "skal-swap swap")
@@ -113,22 +107,22 @@ o.bind("SUPER + ALT + K", "Claude Code key swap", "skal-swap swap")
 ```bash
 omarchy plugin disable skal.swap
 omarchy plugin remove skal.swap --yes
-rm -f ~/.local/bin/skal-swap
-# Save any keys you still need first, then:
+rm -f ~/.local/bin/skal-swap        # if you symlinked it
+# Grab any keys you still want first, then:
 rm -rf ~/.config/skal.swap
 ```
 
-Remove the keybinding above if you added it.
+And remove the keybind if you added one.
 
 ## Dependencies
 
-- `bash` + `jq` (the `skal-swap` CLI; jq ships with Omarchy)
-- Optional: `ai-usagebar` on PATH for usage readouts in the menu
-- `omarchy-notification-send` (ships with Omarchy) for switch toasts
+- `bash` + `jq` (jq ships with Omarchy, so probably nothing to do here)
+- `omarchy-notification-send` for the toasts (also ships with Omarchy)
+- Optional: `ai-usagebar` on PATH, for the usage readouts
 
 ## Config
 
-`~/.config/skal.swap/profiles.conf` — INI-style, one profile per section (see
+`~/.config/skal.swap/profiles.conf` — INI-ish, one profile per section (see
 `profiles.conf.example`):
 
 ```ini
@@ -143,13 +137,13 @@ usage = zai
 name = Claude (OAuth)
 ```
 
-`model` is the starting model for the endpoint; omit it and Claude Code picks
-from the discovered list. Don't use the
-`ANTHROPIC_DEFAULT_{SONNET,OPUS,HAIKU}_MODEL` aliases: they leave the
-top-level `"model"` pin in `~/.claude/settings.json` in charge, so a pin like
-`"opus"` follows you onto every endpoint and the gateway is asked for a model
-it doesn't serve. The switcher sets that pin itself, and restores your
-previous one when you switch back to the OAuth profile.
+`model` is just where you start; leave it out and Claude Code picks from
+whatever the endpoint reports. Don't reach for the
+`ANTHROPIC_DEFAULT_{SONNET,OPUS,HAIKU}_MODEL` variables — they map the
+aliases but leave the top-level `"model"` pin in `~/.claude/settings.json`
+running the show, so a pin of `"opus"` cheerfully follows you onto a GLM
+endpoint and asks it for Opus. Skal Swap owns that pin instead, and puts your
+old one back when you return to the OAuth profile.
 
 | key | meaning |
 | --- | --- |
@@ -166,9 +160,9 @@ previous one when you switch back to the OAuth profile.
 
 ### Models per endpoint
 
-Each endpoint is asked what it serves rather than having its models hardcoded.
-`skal-swap models` lists them, and every switch writes the lineup into
-`modelPicker`, so `/model` moves between them inside a session:
+Nobody wants to maintain a hardcoded list of model ids, so we don't. Each
+endpoint gets asked what it serves, and the answer goes into `modelPicker`,
+which means `/model` swaps between them without leaving your session:
 
 ```bash
 skal-swap models                     # models on the active profile (* = active)
@@ -176,55 +170,53 @@ skal-swap models zai-plan-a --refresh
 skal-swap use zai-plan-a --model glm-5.3-flash   # remembered for that profile
 ```
 
-Discovery probes the endpoint's own catalogue: `/v1/models` on the base URL
-first, then the OpenAI-compatible `/compatible-mode/v1/models` several
-providers park it under. Results are cached for a day (`CCS_MODELS_TTL`), a
-stale list beats none, and `models_url` overrides the probe. An endpoint that
-publishes nothing simply keeps the profile's `model`. Claude Code's own
-`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` doesn't cover this case: it keeps
-only model ids containing `claude` or `anthropic`.
+Discovery tries `/v1/models` on the base URL first, then the OpenAI-compatible
+`/compatible-mode/v1/models` that a few providers park it under. Cached for a
+day (`CCS_MODELS_TTL`), a stale list beats no list, and `models_url` overrides
+the guessing if your provider hides it somewhere else entirely. An endpoint
+that publishes nothing just keeps whatever `model` you set. Claude Code has
+its own `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`, which is no use here: it
+throws away any model id that doesn't contain `claude` or `anthropic`, which
+is to say, all of them.
 
-Note that a catalogue may list non-chat models — Alibaba's token plan includes
-image and audio ids — and they appear in the picker as published.
+Catalogues aren't always tidy — Alibaba's token plan lists image and audio
+models too, and they show up in the picker exactly as published.
 
-`behaves_as` matters more than it looks. A model id this Claude Code build
-doesn't know is treated as a current model, so it receives the full modern
-feature set — newer tool-schema fields, adaptive thinking, effort — and a
-gateway that doesn't implement those rejects the request outright. Naming a
-model the build does know (`claude-sonnet-4-5`, say) pins the client-side
-handling to that model's defaults instead. The picker is also written with
-`replaceBuiltInOptions`, since the built-in Claude ids aren't served by these
-endpoints.
+`behaves_as` looks like a footnote and isn't. Hand Claude Code a model id it's
+never heard of and it assumes the best: current model, so it sends the full
+modern kit — new tool-schema fields, adaptive thinking, effort — and a gateway
+that hasn't caught up throws the whole request back at you. Point `behaves_as`
+at a model your Claude Code build does know (`claude-sonnet-4-5` is a safe
+floor) and it uses that model's defaults instead. The picker also sets
+`replaceBuiltInOptions`, because listing Opus on a GLM endpoint helps nobody.
 
 ### Multiple Claude OAuth logins
 
-Claude Code keeps a single OAuth session, but the switcher can juggle
-several. Adopt the account you are currently logged into as a profile:
+Claude Code holds one OAuth session at a time. Skal Swap will juggle several
+anyway. Adopt whichever account you're logged into right now:
 
 ```bash
 skal-swap oauth-add work          # stores the live ~/.claude/.credentials.json + account
-claude                           # /logout, then /login with the other account
-skal-swap oauth-add personal      # adopt the second one
+claude                            # /logout, then /login as the other one
+skal-swap oauth-add personal      # adopt that one too
 ```
 
-Switching to an OAuth profile (from the bar menu or `skal-swap use work`)
-swaps that profile's stored credentials and account into place and clears
-the API-key env overrides. Switching away syncs the live session —
-including any token refreshes — back into the profile's store first. If
-you log into a *different* account by hand while a profile is active, the
-switcher detects the mismatch, skips the sync-back with a warning, and
-expects you to adopt the new login with `oauth-add` rather than lose it.
+Switching to an OAuth profile swaps its stored credentials into place and
+clears the API-key overrides. Switching away syncs the live session back
+first, token refreshes included, so nothing gets lost. Log into a *different*
+account by hand while a profile is active and it'll spot the mismatch, refuse
+to overwrite the stored one, and tell you to `oauth-add` the new login rather
+than quietly clobbering it.
 
-Credential bundles live under
-`~/.config/skal.swap/credentials/` (chmod 600, outside any
-repo). As with key switches: switch while no claude sessions are running —
-running sessions keep their in-memory tokens and would write them back on
-exit.
+Bundles live in `~/.config/skal.swap/credentials/` (chmod 600, outside any
+repo). Same warning as with keys: swap while no claude sessions are running.
+A live session is sitting on its old tokens and will write them back when it
+exits.
 
 ### Alibaba Cloud token plans (Qwen, DeepSeek, …)
 
-Alibaba Cloud's Model Studio token plans expose an Anthropic-compatible
-gateway; a profile is just the endpoint and the key:
+Alibaba's Model Studio token plans speak Anthropic, so a profile is just the
+endpoint and the key:
 
 ```ini
 [alibaba-qwen]
@@ -234,25 +226,23 @@ token = sk-sp-…
 model = qwen3.8-flash
 ```
 
-`model` only names where to start — the plan's other ids (Qwen, DeepSeek and
-GLM builds, plus image and audio models) are discovered and land in the
-`/model` picker. This gateway publishes its catalogue at
-`/compatible-mode/v1/models` rather than under the Anthropic path, which the
-probe already covers.
+`model` only picks a starting point — the rest of the plan (Qwen, DeepSeek and
+GLM builds, plus the image and audio ones) gets discovered and lands in the
+picker. This gateway keeps its catalogue at `/compatible-mode/v1/models`
+instead of under the Anthropic path, which the probe already handles.
 
-Use the regional host your key belongs to (`ap-southeast-1` above; the
-pay-as-you-go Model Studio endpoint is `dashscope.aliyuncs.com/apps/anthropic`
-or `dashscope-intl…` for international keys). The gateway is picky about
-model ids and entitlements — a `Model not exist` response means the id is
-wrong for that gateway, `Access to model denied` means the id exists but
-your plan tier does not include it. A `icon = deepseek` style override picks
-the row's provider mark when one plan serves several model families.
+Use the regional host your key belongs to (`ap-southeast-1` above; pay-as-you-go
+Model Studio is `dashscope.aliyuncs.com/apps/anthropic`, or `dashscope-intl…`
+for international keys). The gateway is fussy about ids and entitlements:
+`Model not exist` means wrong id for that host, `Access to model denied` means
+the id is real but your tier isn't invited. `icon = deepseek` and friends fix
+the row's badge when one plan serves several model families.
 
 ### Known providers
 
-Any Anthropic-compatible endpoint works — the plugin is provider-agnostic.
-These get their brand mark automatically from the endpoint host (override
-with `icon =`); everyone else gets the neutral three-bar mark:
+Any Anthropic-compatible endpoint works — the plugin doesn't care who's on the
+other end. These get their brand mark picked automatically from the host
+(override with `icon =`); everyone else gets the neutral three-bar mark:
 
 | Provider | Endpoint host | Kind |
 | --- | --- | --- |
@@ -279,85 +269,87 @@ with `icon =`); everyone else gets the neutral three-bar mark:
 | Hugging Face | `api.huggingface.co` | aggregator |
 | Ollama | `localhost:11434` | local |
 
-Model mappings are per-profile `env.*` keys; a good maintained reference
-for exact endpoint paths and current model ids is
-[cc-compatible-models](https://github.com/Alorse/cc-compatible-models).
+If you need a reference for exact endpoint paths and current model ids,
+[cc-compatible-models](https://github.com/Alorse/cc-compatible-models) is
+well maintained.
 
-Bar widget settings (inline on the shell.json layout entry or via your bar's
+Widget settings (inline on the shell.json entry, or through your bar's
 settings UI): `icon` (`Logo` / `Glyph` / `None`), `labelStyle` (`Name` /
 `Host` / `Icon`), `glyph` (Nerd Font glyph for `Glyph` mode and toasts).
 
-**What this writes, by design and only when you ask it to:** `skal-swap use` /
-`swap` (from the menu, terminal, or a keybind) rewrite the managed
-`ANTHROPIC_*` keys inside the `env` object of `~/.claude/settings.json`, and
-set that file's top-level `model` and `modelPicker` for the endpoint you
-switched to — `modelPicker` replaces the built-in lineup, so returning to the
-OAuth profile removes it again and restores the `model` pin you had before
-the first third-party switch. Nothing else in that file is modified. They
-also drop the
-`clientDataCacheSlots` key from `~/.claude.json` — Claude Code caches the
-*resolved* model id there per entrypoint, keyed without regard to
-`ANTHROPIC_BASE_URL`, so a slot filled under the OAuth profile otherwise
-survives the switch and sends a literal Anthropic model id (`claude-sonnet-5`)
-to your gateway, which rejects it with an invalid-parameter 400. It is a
-cache: Claude Code repopulates it on next start, and nothing else in that file
-is touched. Running claude sessions keep the previous key until restarted; the
-toast reminds you.
+### What it writes
 
-## CLI
+Only when you actually pick a profile. A switch rewrites the managed
+`ANTHROPIC_*` keys inside the `env` object of `~/.claude/settings.json`, and
+sets that file's top-level `model` and `modelPicker` for wherever you're
+heading. `modelPicker` replaces the built-in lineup, so going back to the
+OAuth profile removes it and restores the `model` pin you had before you
+started messing about. Nothing else in that file gets touched.
+
+It also drops `clientDataCacheSlots` from `~/.claude.json`. That's a Claude
+Code cache of the resolved model id, and it doesn't care which endpoint you're
+pointed at, so a slot filled up under one provider can get handed to the next
+one. It's a cache; Claude Code rebuilds it on the next start.
+
+Sessions already running keep the old key until you restart them. The toast
+says as much.
+
+## The bundled script
+
+`bin/skal-swap` is what the widget shells out to, and it's a perfectly good
+way to drive things from a terminal or a keybind:
 
 ```
 skal-swap status [ --json ]   which profile is active (JSON drives the widget)
 skal-swap list                configured profiles
 skal-swap use <id>            switch  [--model <id>] pick the model too
 skal-swap models [<id>]       models the endpoint reports (* = active)
-                             [--refresh] [--json]
+                              [--refresh] [--json]
 skal-swap swap                quick-toggle between the first two profiles
 skal-swap edit                open the profiles file in $EDITOR
 skal-swap init                write an example profiles file
 skal-swap usage --json        per-account usage from ai-usagebar, normalized
 ```
 
-Tokens are always masked to their first 8 characters in output.
+Tokens are always masked to their first 8 characters.
 
 ## Roadmap
 
-- **Instanced Claude Code containers, one per provider.** Today a switch is
-  machine-wide: `settings.json` is global, so every session follows the active
-  profile and only one provider runs at a time. The plan is per-provider
-  instances — several Claude Codes side by side, each pinned to its own
-  endpoint, key and model — so a cheap plan can grind a long task while
-  another provider handles interactive work.
-- **The Skalswap CLI**, a separate and entirely optional project, will power
-  those instances. It ships the same `skal-swap` command as a superset of the
-  one bundled here, so installing it upgrades the command rather than adding a
-  second one to your PATH. This plugin does not depend on it and never will:
-  when the CLI is present the bar unlocks the extra functionality, and when it
-  isn't everything here works exactly as documented.
-- **A UI for adding providers**, so a new endpoint and key is a dialog rather
-  than an edit to `profiles.conf`.
+- **One Claude Code per provider, in containers.** Right now a switch is
+  machine-wide, because `settings.json` is global — every session follows the
+  active profile and you get exactly one provider at a time. The plan is
+  per-provider instances running side by side, each pinned to its own
+  endpoint, key and model, so a cheap plan can chew through something long
+  and boring while a better one handles the work you're watching.
+- **The Skalswap CLI** will drive those instances. Separate project, entirely
+  optional, and not written yet. It'll ship `skal-swap` as a superset of the
+  script bundled here, so installing it upgrades the command rather than
+  leaving two confusingly similar binaries on your PATH. This plugin won't
+  ever depend on it: if it's there, the bar grows some extra tricks; if it
+  isn't, everything above works exactly as written.
+- **A UI for adding providers**, so a new endpoint and key is a dialog instead
+  of a text file.
 
 ## Troubleshooting
 
-- **Switched but Claude Code still uses the old key** — already-running
-  sessions read env at startup; restart them.
-- **`API Error: 400 … Invalid API parameter` on a non-Anthropic profile** —
-  the endpoint is being sent a request feature it doesn't implement. Claude
-  Code treats a model id it doesn't recognize as a current model, so the
-  request carries the full modern feature set — newer tool-schema fields,
-  adaptive thinking, effort — and a gateway that hasn't caught up rejects it
-  outright. Set `behaves_as` on the profile to a model this Claude Code build
-  does know (`claude-sonnet-4-5` is a good conservative floor; the docs put
-  adaptive thinking at 4.6 and later), then switch again and start a fresh
-  session. `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` as an `env.<NAME>` on
-  the profile is the broader hammer if a specific beta is the offender.
-  Note it reproduces only in interactive sessions: `claude -p` sends a
-  narrower request and passes where the TUI fails.
-- **Widget shows `…` or `custom`** — `…` means `skal-swap status --json` failed
-  (run it in a terminal to see why); `custom` means the active token matches
-  no profile in profiles.conf.
-- **Plugin widget fails to load after an in-place update** — clear the QML
-  cache and restart the shell once:
+- **Switched, but Claude Code is still on the old key.** Running sessions read
+  their env at startup. Restart them.
+- **`API Error: 400 … Invalid API parameter` on a non-Anthropic profile.**
+  You're sending the endpoint something it doesn't implement. Claude Code sees
+  a model id it doesn't recognise, assumes it's current, and includes the full
+  modern feature set — new tool-schema fields, adaptive thinking, effort — and
+  the gateway rejects the lot. Set `behaves_as` on the profile to a model your
+  build does know (`claude-sonnet-4-5` is a sensible floor; adaptive thinking
+  starts at 4.6), switch again, start a fresh session. If a specific beta is
+  the culprit, `env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = 1` on the profile
+  is the bigger hammer. Fair warning: this only shows up in interactive
+  sessions. `claude -p` sends a smaller request and sails right through, which
+  is a fun way to lose an afternoon.
+- **Widget shows `…` or `custom`.** `…` means `skal-swap status --json` fell
+  over — run it in a terminal and it'll tell you why. `custom` means the token
+  in play doesn't match any profile you've configured.
+- **Widget won't load after an in-place update.** Clear the QML cache and
+  restart the shell:
 
   ```bash
   rm -rf "$HOME/.cache/quickshell/qmlcache" "$HOME/.cache/quickshell"/qtpipelinecache-*

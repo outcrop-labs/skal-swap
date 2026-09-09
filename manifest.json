@@ -6,7 +6,7 @@
   "author": "Outcrop Labs",
   "license": "MIT",
   "homepage": "https://github.com/outcrop-labs/skal-swap",
-  "description": "Menubar switcher for Claude Code providers — keys, endpoints, and per-endpoint model discovery — with optional usage readouts.",
+  "description": "Swap the provider and model behind Claude Code from your bar. Keys, endpoints, and whatever models each provider actually serves, with optional usage bars.",
   "kinds": [
     "bar-widget"
   ],

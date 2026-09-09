@@ -362,16 +362,20 @@ Panel {
         delegate: Rectangle {
           id: row
           width: menuColumn.width
-          height: usageInfo ? Style.space(68) : Style.space(30)
-          radius: Style.cornerRadius
-          color: rowMouse.containsMouse
-            ? Util.alpha(rowFg.color, 0.08)
-            : "transparent"
+          color: "transparent"
+          height: (usageInfo ? Style.space(68) : Style.space(30))
+                + (alibabaHost ? Style.space(30) : 0)
 
           readonly property color rowFg: root.bar ? root.bar.barForeground : Color.foreground
           readonly property var prof: modelData
           readonly property bool active: root.statusJson && root.statusJson.current === prof.id
           readonly property var usageInfo: prof.usage_id ? (root.usageById[prof.usage_id] || null) : null
+          // Alibaba publishes no usage API for token plans — the console is
+          // the only place quota exists, so each alibaba row links to it.
+          readonly property bool alibabaHost: {
+            var h = prof.host || ""
+            return h.indexOf("maas.aliyuncs.com") >= 0 || h.indexOf("dashscope") >= 0
+          }
           // Progress-bar metrics (max 2), one per window with a percent.
           readonly property var barMetrics: {
             if (!usageInfo || !usageInfo.metrics) return []
@@ -392,133 +396,185 @@ Panel {
             return parts.join(" · ")
           }
 
-          // Active marker: accent pill down the left edge.
-          Rectangle {
-            visible: row.active
-            width: 3
-            radius: width / 2
-            color: Color.accent
-            anchors.left: parent.left
-            anchors.top: parent.top
-            anchors.topMargin: Style.space(4)
-            anchors.bottom: parent.bottom
-            anchors.bottomMargin: Style.space(4)
-          }
+          // Zone 1: the profile entry itself, sized exactly like every
+          // other row so content alignment never shifts.
+          Item {
+            id: contentZone
+            width: parent.width
+            height: row.usageInfo ? Style.space(68) : Style.space(30)
 
-          // Left+right anchors give the column a definite width, so the
-          // child Texts can bind width to it without a binding loop.
-          Column {
-            anchors.left: parent.left
-            anchors.leftMargin: Style.space(10)
-            anchors.right: parent.right
-            anchors.rightMargin: Style.space(8)
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(1)
+            Rectangle {
+              anchors.fill: parent
+              radius: Style.cornerRadius
+              color: rowMouse.containsMouse ? Util.alpha(row.rowFg.color, 0.08) : "transparent"
+            }
 
-            // Title line: provider mark (assets/providers/<icon>.svg, from
-            // the CLI's host mapping or the profile's `icon =` key) inline
-            // with the name, tinted to the theme — accent while active.
-            Row {
-              width: parent.width
-              spacing: Style.space(6)
+            // Active marker: accent pill down the left edge.
+            Rectangle {
+              visible: row.active
+              width: 3
+              radius: width / 2
+              color: Color.accent
+              anchors.left: parent.left
+              anchors.top: parent.top
+              anchors.topMargin: Style.space(4)
+              anchors.bottom: parent.bottom
+              anchors.bottomMargin: Style.space(4)
+            }
 
-              Item {
-                id: providerMark
-                width: Style.space(22)
-                height: width
-                anchors.verticalCenter: parent.verticalCenter
+            // Left+right anchors give the column a definite width, so the
+            // child Texts can bind width to it without a binding loop.
+            Column {
+              anchors.left: parent.left
+              anchors.leftMargin: Style.space(10)
+              anchors.right: parent.right
+              anchors.rightMargin: Style.space(8)
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(1)
 
-                // A couple of pixels of breathing room on every edge —
-                // marks that paint to the SVG edge (the Z.AI border)
-                // otherwise meet the effect's texture boundary.
-                Image {
-                  id: providerProvider
-                  anchors.fill: parent
-                  anchors.margins: 2
-                  source: Qt.resolvedUrl("assets/providers/" + (row.prof.icon || "claude") + ".svg")
-                  sourceSize: Qt.size(64, 64)
-                  fillMode: Image.PreserveAspectFit
+              // Title line: provider mark (assets/providers/<icon>.svg,
+              // from the CLI's host mapping or the profile's `icon =` key)
+              // inline with the name, tinted to the theme — accent while
+              // active.
+              Row {
+                width: parent.width
+                spacing: Style.space(6)
+
+                Item {
+                  id: providerMark
+                  width: Style.space(22)
+                  height: width
+                  anchors.verticalCenter: parent.verticalCenter
+
+                  // A couple of pixels of breathing room on every edge —
+                  // marks that paint to the SVG edge (the Z.AI border)
+                  // otherwise meet the effect's texture boundary.
+                  Image {
+                    id: providerProvider
+                    anchors.fill: parent
+                    anchors.margins: 2
+                    source: Qt.resolvedUrl("assets/providers/" + (row.prof.icon || "claude") + ".svg")
+                    sourceSize: Qt.size(64, 64)
+                    fillMode: Image.PreserveAspectFit
+                  }
+
+                  MultiEffect {
+                    anchors.fill: providerProvider
+                    source: providerProvider
+                    autoPaddingEnabled: false
+                    colorization: 1.0
+                    colorizationColor: row.active ? Color.accent : row.rowFg
+                  }
                 }
 
-                MultiEffect {
-                  anchors.fill: providerProvider
-                  source: providerProvider
-                  autoPaddingEnabled: false
-                  colorization: 1.0
-                  colorizationColor: row.active ? Color.accent : row.rowFg
+                Text {
+                  width: parent.width - providerMark.width - parent.spacing
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: row.prof.name
+                  color: row.active ? Color.accent : row.rowFg
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.body
+                  font.bold: row.active
+                  elide: Text.ElideRight
+                }
+              }
+
+              // One meter line per usage window (session, weekly) under the
+              // name: progress bar plus its percentage, labeled by the
+              // window's initial. Urgent fill past 80%.
+              Column {
+                id: barStack
+                width: parent.width
+                spacing: Style.space(4)
+                visible: row.barMetrics.length > 0
+
+                Repeater {
+                  model: row.barMetrics
+
+                  Row {
+                    spacing: Style.space(6)
+
+                    UsageBar {
+                      width: barStack.width - pctText.implicitWidth - parent.spacing
+                      anchors.verticalCenter: parent.verticalCenter
+                      fraction: Util.clamp((modelData.percent || 0) / 100, 0, 1)
+                      warn: (modelData.percent || 0) > 80
+                    }
+
+                    Text {
+                      id: pctText
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: {
+                        var label = String(modelData.label || "")
+                        var initial = (label.match(/[A-Za-z]/) || [""])[0]
+                        return initial ? initial + " " + modelData.percent + "%"
+                                       : modelData.percent + "%"
+                      }
+                      color: (modelData.percent || 0) > 80 ? Color.urgent : row.rowFg
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
+                    }
+                  }
                 }
               }
 
               Text {
-                width: parent.width - providerMark.width - parent.spacing
-                anchors.verticalCenter: parent.verticalCenter
-                text: row.prof.name
-                color: row.active ? Color.accent : row.rowFg
+                width: parent.width
+                visible: text !== ""
+                text: row.detailLine
+                color: Color.muted
                 font.family: Style.font.family
-                font.pixelSize: Style.font.body
-                font.bold: row.active
+                font.pixelSize: Style.font.caption
                 elide: Text.ElideRight
               }
             }
 
-            // One meter line per usage window (session, weekly) under the
-            // name: progress bar plus its percentage, labeled by the
-            // window's initial. Urgent fill past 80%.
-            Column {
-              id: barStack
-              width: parent.width
-              spacing: Style.space(4)
-              visible: row.barMetrics.length > 0
-
-              Repeater {
-                model: row.barMetrics
-
-                Row {
-                  spacing: Style.space(6)
-
-                  UsageBar {
-                    width: barStack.width - pctText.implicitWidth - parent.spacing
-                    anchors.verticalCenter: parent.verticalCenter
-                    fraction: Util.clamp((modelData.percent || 0) / 100, 0, 1)
-                    warn: (modelData.percent || 0) > 80
-                  }
-
-                  Text {
-                    id: pctText
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: {
-                      var label = String(modelData.label || "")
-                      var initial = (label.match(/[A-Za-z]/) || [""])[0]
-                      return initial ? initial + " " + modelData.percent + "%"
-                                     : modelData.percent + "%"
-                    }
-                    color: (modelData.percent || 0) > 80 ? Color.urgent : row.rowFg
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.caption
-                  }
-                }
+            MouseArea {
+              id: rowMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                root.close()
+                if (!row.active) root.useProfile(row.prof.id, row.prof.name)
               }
-            }
-
-            Text {
-              width: parent.width
-              visible: text !== ""
-              text: row.detailLine
-              color: Color.muted
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-              elide: Text.ElideRight
             }
           }
 
-          MouseArea {
-            id: rowMouse
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: {
-              root.close()
-              if (!parent.active) root.useProfile(parent.prof.id, parent.prof.name)
+          // Zone 2 (alibaba rows): breathing room, then the console link.
+          Item {
+            visible: row.alibabaHost
+            height: visible ? Style.space(30) : 0
+            width: parent.width
+            anchors.bottom: parent.bottom
+
+            Rectangle {
+              id: consolePlate
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.bottom: parent.bottom
+              height: Style.space(24)
+              radius: Style.cornerRadius
+              color: consoleMouse.containsMouse ? Util.alpha(Color.muted, 0.15) : "transparent"
+            }
+
+            Text {
+              anchors.left: parent.left
+              anchors.leftMargin: Style.space(26)
+              anchors.verticalCenter: consolePlate.verticalCenter
+              text: "quota in Alibaba console  ↗"
+              color: consoleMouse.containsMouse ? row.rowFg : Color.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+
+            MouseArea {
+              id: consoleMouse
+              anchors.fill: consolePlate
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: Util.execDetached(
+                "xdg-open https://bailian.console.aliyun.com/?#/efm/subscription/overview")
             }
           }
         }
@@ -583,41 +639,6 @@ Panel {
         elide: Text.ElideRight
       }
 
-      // Alibaba token plans publish no usage API — the console is the only
-      // place quota exists, so surface a link when such a profile is listed.
-      Rectangle {
-        width: menuColumn.width
-        height: hasAlibaba ? Style.space(26) : 0
-        visible: height > 0
-        radius: Style.cornerRadius
-        color: consoleMouse.containsMouse ? Util.alpha(Color.muted, 0.12) : "transparent"
-
-        readonly property bool hasAlibaba: {
-          for (var i = 0; i < root.profiles.length; i++)
-            if ((root.profiles[i].host || "").indexOf("maas.aliyuncs.com") >= 0 ||
-                (root.profiles[i].host || "").indexOf("dashscope") >= 0) return true
-          return false
-        }
-
-        Text {
-          anchors.left: parent.left
-          anchors.leftMargin: Style.space(8)
-          anchors.verticalCenter: parent.verticalCenter
-          text: "Alibaba token-plan quota  ↗"
-          color: Color.muted
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-        }
-
-        MouseArea {
-          id: consoleMouse
-          anchors.fill: parent
-          hoverEnabled: true
-          cursorShape: Qt.PointingHandCursor
-          onClicked: Util.execDetached(
-            "xdg-open https://bailian.console.aliyun.com/?#/efm/subscription/overview")
-        }
-      }
     }
   }
 

@@ -106,6 +106,33 @@ name = Claude (OAuth)
 | `token` | API token; omit to fall back to Claude Code's OAuth login |
 | `env.<NAME>` | extra env written with the profile (e.g. model mappings) |
 | `usage` | optional account marker for usage display (`zai`) |
+| `icon` | optional provider-mark override (`zai`, `openai`, `qwen`, …) |
+| `oauth` | `true` for adopted OAuth-login profiles (see below) |
+
+### Multiple Claude OAuth logins
+
+Claude Code keeps a single OAuth session, but the switcher can juggle
+several. Adopt the account you are currently logged into as a profile:
+
+```bash
+skal-ccs oauth-add work          # stores the live ~/.claude/.credentials.json + account
+claude                           # /logout, then /login with the other account
+skal-ccs oauth-add personal      # adopt the second one
+```
+
+Switching to an OAuth profile (from the bar menu or `skal-ccs use work`)
+swaps that profile's stored credentials and account into place and clears
+the API-key env overrides. Switching away syncs the live session —
+including any token refreshes — back into the profile's store first. If
+you log into a *different* account by hand while a profile is active, the
+switcher detects the mismatch, skips the sync-back with a warning, and
+expects you to adopt the new login with `oauth-add` rather than lose it.
+
+Credential bundles live under
+`~/.config/skal.claude-code-switcher/credentials/` (chmod 600, outside any
+repo). As with key switches: switch while no claude sessions are running —
+running sessions keep their in-memory tokens and would write them back on
+exit.
 
 Bar widget settings (inline on the shell.json layout entry or via your bar's
 settings UI): `icon` (`Logo` / `Glyph` / `None`), `labelStyle` (`Name` /

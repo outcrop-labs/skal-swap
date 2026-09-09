@@ -114,7 +114,12 @@ Panel {
     swapProc.running = true
   }
 
-  Component.onCompleted: refreshStatus()
+  Component.onCompleted: {
+    refreshStatus()
+    // Warm the usage cache in the background so the first popup open paints
+    // instantly instead of waiting on the multi-account fetch.
+    refreshUsage()
+  }
 
   // Announce profile changes from ANY source (menu, terminal, manual edit)
   // — the watcher is the single authority. The grace window keeps shell
@@ -194,8 +199,10 @@ Panel {
   // label even then; status --json is a cheap local read.
   Timer { interval: 20000; repeat: true; running: true; onTriggered: root.refreshStatus() }
 
-  // Usage data goes stale while the picker stays open — refetch each minute.
-  Timer { interval: 60000; repeat: true; running: root.opened; onTriggered: root.refreshUsage() }
+  // Usage windows move on hour scales; the CLI serves its disk cache
+  // instantly and refetches only past the TTL, so a refresh every few
+  // minutes is plenty while the picker sits open.
+  Timer { interval: 300000; repeat: true; running: root.opened; onTriggered: root.refreshUsage() }
 
   FileView {
     path: root.settingsPath
@@ -286,8 +293,8 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: Style.space(228)
-    contentHeight: fittedContentHeight(menuColumn.implicitHeight, Style.space(340))
+    contentWidth: Style.space(300)
+    contentHeight: fittedContentHeight(menuColumn.implicitHeight, Style.space(440))
 
     onOpenChanged: if (open) root.refreshUsage()
 
@@ -338,13 +345,23 @@ Panel {
         }
       }
 
+      Item { width: menuColumn.width; height: Style.space(5) }
+
+      Rectangle {
+        width: menuColumn.width
+        height: 1
+        color: Util.alpha(Color.muted, 0.55)
+      }
+
+      Item { width: menuColumn.width; height: Style.space(5) }
+
       Repeater {
         model: root.profiles
 
         delegate: Rectangle {
           id: row
           width: menuColumn.width
-          height: usageInfo ? Style.space(56) : Style.space(30)
+          height: usageInfo ? Style.space(68) : Style.space(30)
           radius: Style.cornerRadius
           color: rowMouse.containsMouse
             ? Util.alpha(rowFg.color, 0.08)
@@ -374,51 +391,106 @@ Panel {
             return parts.join(" · ")
           }
 
-          Text {
-            anchors.left: parent.left
-            anchors.leftMargin: Style.space(8)
-            anchors.verticalCenter: parent.verticalCenter
+          // Active marker: accent pill down the left edge.
+          Rectangle {
             visible: row.active
-            text: ""
+            width: 3
+            radius: width / 2
             color: Color.accent
-            font.family: Style.font.family
-            font.pixelSize: Style.font.body
+            anchors.left: parent.left
+            anchors.top: parent.top
+            anchors.topMargin: Style.space(4)
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: Style.space(4)
           }
 
           // Left+right anchors give the column a definite width, so the
           // child Texts can bind width to it without a binding loop.
           Column {
             anchors.left: parent.left
-            anchors.leftMargin: Style.space(26)
+            anchors.leftMargin: Style.space(10)
             anchors.right: parent.right
             anchors.rightMargin: Style.space(8)
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(1)
 
-            Text {
+            // Title line: provider mark (assets/providers/<icon>.svg, from
+            // the CLI's host mapping or the profile's `icon =` key) inline
+            // with the name, tinted to the theme — accent while active.
+            Row {
               width: parent.width
-              text: row.prof.name
-              color: row.active ? Color.accent : row.rowFg
-              font.family: Style.font.family
-              font.pixelSize: Style.font.body
-              elide: Text.ElideRight
+              spacing: Style.space(6)
+
+              Item {
+                id: providerMark
+                width: Math.round(Style.font.body * 1.15)
+                height: width
+                anchors.verticalCenter: parent.verticalCenter
+
+                Image {
+                  id: providerProvider
+                  anchors.fill: parent
+                  source: Qt.resolvedUrl("assets/providers/" + (row.prof.icon || "claude") + ".svg")
+                  sourceSize: Qt.size(48, 48)
+                  fillMode: Image.PreserveAspectFit
+                }
+
+                MultiEffect {
+                  anchors.fill: parent
+                  source: providerProvider
+                  autoPaddingEnabled: false
+                  colorization: 1.0
+                  colorizationColor: row.active ? Color.accent : row.rowFg
+                }
+              }
+
+              Text {
+                width: parent.width - providerMark.width - parent.spacing
+                anchors.verticalCenter: parent.verticalCenter
+                text: row.prof.name
+                color: row.active ? Color.accent : row.rowFg
+                font.family: Style.font.family
+                font.pixelSize: Style.font.body
+                font.bold: row.active
+                elide: Text.ElideRight
+              }
             }
 
-            // One thin progress bar per usage window (session, weekly),
-            // stacked under the name; urgent fill past 80%.
+            // One meter line per usage window (session, weekly) under the
+            // name: progress bar plus its percentage, labeled by the
+            // window's initial. Urgent fill past 80%.
             Column {
               id: barStack
               width: parent.width
-              spacing: Style.space(2)
+              spacing: Style.space(4)
               visible: row.barMetrics.length > 0
 
               Repeater {
                 model: row.barMetrics
 
-                UsageBar {
-                  width: barStack.width
-                  fraction: Util.clamp((modelData.percent || 0) / 100, 0, 1)
-                  warn: (modelData.percent || 0) > 80
+                Row {
+                  spacing: Style.space(6)
+
+                  UsageBar {
+                    width: barStack.width - pctText.implicitWidth - parent.spacing
+                    anchors.verticalCenter: parent.verticalCenter
+                    fraction: Util.clamp((modelData.percent || 0) / 100, 0, 1)
+                    warn: (modelData.percent || 0) > 80
+                  }
+
+                  Text {
+                    id: pctText
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: {
+                      var label = String(modelData.label || "")
+                      var initial = (label.match(/[A-Za-z]/) || [""])[0]
+                      return initial ? initial + " " + modelData.percent + "%"
+                                     : modelData.percent + "%"
+                    }
+                    color: (modelData.percent || 0) > 80 ? Color.urgent : row.rowFg
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
                 }
               }
             }

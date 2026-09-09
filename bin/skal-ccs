@@ -30,8 +30,12 @@ set -euo pipefail
 
 PROFILES="${CCS_PROFILES:-$HOME/.config/skal.claude-code-switcher/profiles.conf}"
 SETTINGS="${CCS_SETTINGS:-$HOME/.claude/settings.json}"
+CREDS="${CCS_CREDS:-$HOME/.claude/.credentials.json}"
+CLAUDE_JSON="${CCS_CLAUDE_JSON:-$HOME/.claude.json}"
+STATE_DIR="${CCS_STATE:-$HOME/.local/state/skal.claude-code-switcher}"
+CRED_DIR="${CCS_CRED_DIR:-$HOME/.config/skal.claude-code-switcher/credentials}"
+OAUTH_STATE="$STATE_DIR/active-oauth"
 GLM_KEYS="${GLM_KEYS:-$HOME/.config/glm-keys.env}"
-EXAMPLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Env keys this tool owns. Cleared on every switch, then re-set from the
 # target profile (plus any env.* key any profile sets).
@@ -46,7 +50,7 @@ readonly -a MANAGED_BASE=(
   ANTHROPIC_DEFAULT_OPUS_MODEL
 )
 
-declare -A P_NAME=() P_BASE=() P_TOKEN=() P_USAGE=()
+declare -A P_NAME=() P_BASE=() P_TOKEN=() P_USAGE=() P_ICON=() P_OAUTH=()
 declare -a PROFILE_IDS=()
 declare -a ENV_LINES=()
 
@@ -64,8 +68,13 @@ usage: skal-ccs [command]
   swap            quick-toggle between the first two profiles (hotkey action)
   edit            open the profiles file in $EDITOR
   init            write an example profiles file
+  oauth-add <id>  store the currently-logged-in Claude OAuth account as a
+                  profile [--name N] [--force] — log into another account
+                  with claude /login and repeat to add more
   migrate-glm     import ~/.config/glm-keys.env + the active key [--force]
   usage --json    per-account usage from ai-usagebar, normalized
+                  [--max-age N] serve the disk cache under N seconds old
+                  (default 300; 0 = always fetch)
 
 profiles : ~/.config/skal.claude-code-switcher/profiles.conf
 settings : ~/.claude/settings.json (only env.ANTHROPIC_* keys are touched)
@@ -109,6 +118,8 @@ load_profiles() {
             base_url) P_BASE[$sec]=$val ;;
             token) P_TOKEN[$sec]=$val ;;
             usage) P_USAGE[$sec]=$val ;;
+            icon) P_ICON[$sec]=$val ;;
+            oauth) [[ $val == "true" || $val == "yes" || $val == "1" ]] && P_OAUTH[$sec]=1 ;;
             env.*) ENV_LINES+=("$sec"$'\t'"${key#env.}"$'\t'"$val") ;;
             *) echo "skal-ccs: ignoring unknown key '$key' in [$sec]" >&2 ;;
         esac
@@ -120,6 +131,148 @@ host_of() {
     [[ -n $u ]] || { echo "api.anthropic.com"; return; }
     u=${u#*://}
     echo "${u%%/*}"
+}
+
+# Provider mark for a profile (an asset in assets/providers/<name>.svg).
+# Explicit `icon =` key wins; otherwise the endpoint host decides.
+icon_of() { # icon_of <profile-id>
+    local id=$1
+    [[ -n ${P_ICON[$id]:-} ]] && { printf '%s' "${P_ICON[$id]}" | tr -c 'a-z0-9-' '-'; return; }
+    case $(host_of "${P_BASE[$id]:-}") in
+    api.z.ai | z.ai) echo zai ;;
+    api.openai.com | openai.com) echo openai ;;
+    openrouter.ai | api.openrouter.ai) echo openrouter ;;
+    generativelanguage.googleapis.com | aiplatform.googleapis.com) echo googlegemini ;;
+    api.deepseek.com | deepseek.com) echo deepseek ;;
+    api.moonshot.ai | api.moonshot.cn | kimi.com | api.kimi.com) echo kimi ;;
+    api.x.ai | x.ai) echo x ;;
+    api.minimax.io | minimax.io | api.minimaxi.com) echo minimax ;;
+    dashscope.aliyuncs.com | aliyuncs.com) echo qwen ;;
+    api.mistral.ai | mistral.ai) echo mistralai ;;
+    api.together.xyz) echo huggingface ;;
+    huggingface.co | api.huggingface.co) echo huggingface ;;
+    localhost* | 127.0.0.1*) [[ ${P_BASE[$id]:-} == *:11434* ]] && echo ollama || echo claude ;;
+    *) echo claude ;;
+    esac
+}
+
+# --- multiple Claude OAuth logins ------------------------------------------
+#
+# Claude Code keeps exactly one OAuth session: ~/.claude/.credentials.json
+# (opaque token blob) plus the oauthAccount block in ~/.claude.json. An
+# `oauth = true` profile stores a bundle of both under the credentials dir
+# and `use` swaps them into place — after syncing the live session back
+# into its own store so token refreshes persist per profile. Account
+# identity rides on oauthAccount.accountUuid: if the live login no longer
+# matches the stored one (a manual /login happened), sync-back is skipped
+# with a warning rather than corrupting the store.
+
+is_oauth() { [[ ${P_OAUTH[$1]:-} == 1 ]]; }
+
+store_path() { printf '%s/%s.json' "$CRED_DIR" "$1"; }
+
+live_fingerprint() {
+    jq -r '.oauthAccount.accountUuid // .oauthAccount.emailAddress // empty' "$CLAUDE_JSON" 2>/dev/null || true
+}
+
+write_oauth_state() { # write_oauth_state <id|empty>
+    mkdir -p "$STATE_DIR"
+    printf '%s' "$1" >|"$OAUTH_STATE"
+}
+
+# Active OAuth profile id from the state file ("" when none). Must succeed
+# under set -e even when the file is absent.
+active_oauth() {
+    [[ -r $OAUTH_STATE ]] || return 0
+    cat "$OAUTH_STATE"
+}
+
+# Persist the live OAuth session into the store of the profile the state
+# file says is active (no-op when none). Fingerprint-guarded.
+sync_back() {
+    local cur live_fp stored_fp
+    cur=$(active_oauth)
+    [[ -n $cur && -f $(store_path "$cur") ]] || return 0
+    local store
+    store=$(store_path "$cur")
+    stored_fp=$(jq -r '.fingerprint // empty' "$store" 2>/dev/null) || true
+    if [[ -f $CREDS ]]; then
+        live_fp=$(live_fingerprint)
+        if [[ -n $live_fp && -n $stored_fp && $live_fp != "$stored_fp" ]]; then
+            echo "skal-ccs: live login ($live_fp) is not the one stored for [$cur] — skipping sync-back" >&2
+            return 0
+        fi
+        local tmp
+        tmp=$(mktemp)
+        jq -n --slurpfile creds "$CREDS" --slurpfile acct "$CLAUDE_JSON" \
+            --arg fp "${live_fp:-$stored_fp}" --argjson now "$(date +%s)" \
+            '{fingerprint: $fp, stored_at: $now,
+              credentials: ($creds[0].claudeAiOauth // null),
+              oauthAccount: ($acct[0].oauthAccount // null)}' >"$tmp" &&
+            cat "$tmp" >|"$store"
+        rm -f "$tmp"
+        chmod 600 "$store"
+    fi
+}
+
+# Swap an OAuth profile's bundle into the live files.
+load_oauth() { # load_oauth <id>
+    local store
+    store=$(store_path "$1")
+    [[ -f $store ]] || die "no OAuth store for [$1] — run: skal-ccs oauth-add $1"
+    jq -e '.credentials != null' "$store" >/dev/null 2>&1 || die "OAuth store for [$1] has no credentials"
+
+    local tmp
+    tmp=$(mktemp)
+    jq -n --slurpfile s "$store" '{claudeAiOauth: $s[0].credentials}' >"$tmp" &&
+        cat "$tmp" >|"$CREDS"
+    rm -f "$tmp"
+    chmod 600 "$CREDS"
+
+    if [[ -f $CLAUDE_JSON ]] && jq -e '.oauthAccount != null' "$store" >/dev/null 2>&1; then
+        rewrite "$CLAUDE_JSON" --slurpfile s "$store" \
+            '.oauthAccount = $s[0].oauthAccount'
+    fi
+}
+
+cmd_oauth_add() { # cmd_oauth_add <id> [--name N] [--force]
+    local id=${1:?usage: skal-ccs oauth-add <id> [--name N]}
+    shift
+    local name="" force=0
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+        --name) name=$2; shift 2 ;;
+        --force) force=1; shift ;;
+        *) die "unknown option: $1" ;;
+        esac
+    done
+    [[ -f $CREDS ]] || die "no $CREDS — log into Claude first (claude /login)"
+    jq -e '.claudeAiOauth != null' "$CREDS" >/dev/null 2>&1 || die "no OAuth session in $CREDS — log in first (claude /login)"
+
+    load_profiles
+    [[ -z ${P_NAME[$id]+x} || $force == 1 ]] || die "profile [$id] exists (use --force to refresh its store)"
+    if [[ -z ${P_NAME[$id]+x} ]]; then
+        name=${name:-$(jq -r '.oauthAccount.displayName // .oauthAccount.emailAddress // "Claude login"' "$CLAUDE_JSON")}
+        printf '\n[%s]\nname = "%s"\noauth = true\n' "$id" "$name" >>"$PROFILES"
+    fi
+
+    mkdir -p "$CRED_DIR"
+    write_oauth_state "" # sync_back would target the new id's empty store
+    local fp
+    fp=$(live_fingerprint)
+    local tmp
+    tmp=$(mktemp)
+    jq -n --slurpfile creds "$CREDS" --slurpfile acct "$CLAUDE_JSON" \
+        --arg fp "$fp" --argjson now "$(date +%s)" \
+        '{fingerprint: $fp, stored_at: $now,
+          credentials: ($creds[0].claudeAiOauth // null),
+          oauthAccount: ($acct[0].oauthAccount // null)}' >"$tmp" &&
+        cat "$tmp" >|"$(store_path "$id")"
+    rm -f "$tmp"
+    chmod 600 "$(store_path "$id")"
+    write_oauth_state "$id"
+    echo "stored OAuth login as [$id] (fingerprint ${fp:0:8}…)"
+    echo "to add another account: claude /login the other one, then: skal-ccs oauth-add <id-2>"
 }
 
 # Same label rule as the ai-usagebar multi-account shim, so usage ids match.
@@ -136,9 +289,9 @@ usage_id_of() { # <profile-id> -> "zai@label" or ""
 settings_env() { jq -r --arg k "$1" '.env[$k] // empty' "$SETTINGS" 2>/dev/null || true; }
 
 # Which profile (if any) the live settings correspond to. Token match first;
-# tokenless profiles match when no AUTH_TOKEN is set and base URLs agree.
+# then the active OAuth profile (state file), then plain tokenless profiles.
 current_id() {
-    local id ct cb tok base
+    local id ct cb tok base oa
     ct=$(settings_env ANTHROPIC_AUTH_TOKEN)
     cb=$(settings_env ANTHROPIC_BASE_URL)
     if [[ -n $ct ]]; then
@@ -146,6 +299,10 @@ current_id() {
             [[ ${P_TOKEN[$id]:-} == "$ct" ]] && { echo "$id"; return 0; }
         done
         return 1
+    fi
+    oa=$(active_oauth)
+    if [[ -n $oa && -n ${P_NAME[$oa]+x} && -z ${P_TOKEN[$oa]:-} ]]; then
+        echo "$oa"; return 0
     fi
     for id in "${PROFILE_IDS[@]}"; do
         tok=${P_TOKEN[$id]:-} base=${P_BASE[$id]:-}
@@ -178,6 +335,10 @@ apply_profile() { # apply_profile <id>
     [[ -n ${P_NAME[$id]+x} ]] || die "no profile '$id' (see: skal-ccs list)"
     [[ -f $SETTINGS ]] || die "no $SETTINGS — run claude once first"
 
+    # Leaving (or re-applying) an OAuth profile: persist the live session's
+    # refreshed tokens into that profile's store before touching anything.
+    sync_back
+
     local -a pairs=()
     [[ -n ${P_TOKEN[$id]:-} ]] && pairs+=("ANTHROPIC_AUTH_TOKEN"$'\t'"${P_TOKEN[$id]}")
     [[ -n ${P_BASE[$id]:-} ]] && pairs+=("ANTHROPIC_BASE_URL"$'\t'"${P_BASE[$id]}")
@@ -208,6 +369,12 @@ apply_profile() { # apply_profile <id>
                  | with_entries(. as $e | select(($del_keys | index($e.key)) == null))
                  + $add_pairs)'
     chmod 600 "$SETTINGS"
+    if is_oauth "$id"; then
+        load_oauth "$id"
+        write_oauth_state "$id"
+    else
+        write_oauth_state ""
+    fi
     echo "switched to ${P_NAME[$id]:-$id} — restart running claude sessions to pick it up"
 }
 
@@ -219,12 +386,14 @@ status_json() {
         prefix=${P_TOKEN[$id]:-}
         [[ -n $prefix ]] && prefix=$(mask "$prefix")
         uid=$(usage_id_of "$id")
-        tsv+="$id"$'\t'"${P_NAME[$id]:-}"$'\t'"$(host_of "${P_BASE[$id]:-}")"$'\t'"$prefix"$'\t'"$uid"$'\n'
+        tsv+="$id"$'\t'"${P_NAME[$id]:-}"$'\t'"$(host_of "${P_BASE[$id]:-}")"$'\t'"$prefix"$'\t'"$uid"$'\t'"$(icon_of "$id")"$'\t'"$(is_oauth "$id" && echo 1 || echo 0)"$'\n'
     done
     printf '%s' "$tsv" | jq -R -s --arg cur "$cur" --arg settings "$SETTINGS" '
         split("\n") | map(select(length > 0)) | map(split("\t"))
         | map({id: .[0], name: .[1], host: .[2], token_prefix: .[3],
-               usage_id: (if .[4] == "" then null else .[4] end)})
+               usage_id: (if .[4] == "" then null else .[4] end),
+               icon: (.[5] // "claude"),
+               oauth: (.[6] == "1")})
         | {settings: $settings,
            current: (if $cur == "" then null else $cur end),
            current_known: ($cur != ""),
@@ -235,6 +404,7 @@ status_human() {
     local cur id
     if cur=$(current_id); then
         local key_desc="login"
+        is_oauth "$cur" && key_desc="oauth"
         [[ -n ${P_TOKEN[$cur]:-} ]] && key_desc=$(mask "${P_TOKEN[$cur]}")
         echo "claude code : ${P_NAME[$cur]:-$cur} ($key_desc) @ $(host_of "${P_BASE[$cur]:-}")"
     else
@@ -282,21 +452,68 @@ usage_bin() { # <path of the ai-usagebar to use, or fail>
     return 1
 }
 
-cmd_usage_json() {
-    local out bin
-    bin=$(usage_bin) || { echo '{"entries":[],"error":"ai-usagebar not found"}'; return 0; }
-    out=$(timeout 90 "$bin" usage --json 2>/dev/null) || true
-    if [[ -z $out ]]; then
-        echo '{"entries":[],"error":"ai-usagebar returned nothing"}'
+usage_cache() { # <report-json> — store; called with no args = print cached
+    local cache="${CCS_STATE:-$HOME/.local/state/skal.claude-code-switcher}/usage.json"
+    if [[ $# -eq 0 ]]; then
+        [[ -r $cache ]] && cat "$cache"
         return 0
     fi
-    printf '%s' "$out" | jq 'if (type == "object" and has("entries")) then
+    mkdir -p "$(dirname "$cache")"
+    local tmp
+    tmp=$(mktemp)
+    jq --argjson now "$(date +%s)" '{fetched_at: $now, report: .}' <<<"$1" >"$tmp" &&
+        cat "$tmp" >|"$cache"
+    rm -f "$tmp"
+}
+
+cmd_usage_json() { # args: --json [--max-age N]  (N=0 always fetches)
+    local max_age=300
+    case ${1:-} in
+    --json) shift ;;
+    *) die "usage: skal-ccs usage --json [--max-age N]" ;;
+    esac
+    if [[ ${1:-} == "--max-age" ]]; then
+        [[ ${2:-} =~ ^[0-9]+$ ]] || die "--max-age needs a number"
+        max_age=$2
+    fi
+
+    # Serve-stale-while-revalidate: a fresh cache answers instantly; the
+    # multi-account fetch behind it takes tens of seconds (one full report
+    # per key), so the picker should never wait on the network.
+    if (( max_age > 0 )); then
+        local cached fetched
+        cached=$(usage_cache)
+        if [[ -n $cached ]]; then
+            fetched=$(jq -r '.fetched_at // 0' <<<"$cached" 2>/dev/null) || fetched=0
+            if (( fetched > 0 && $(date +%s) - fetched < max_age )); then
+                jq -c '.report' <<<"$cached"
+                return 0
+            fi
+        fi
+    fi
+
+    local out bin
+    bin=$(usage_bin) || {
+        # No CLI at all — fall back to whatever cache exists, however old.
+        if [[ -n $(usage_cache) ]]; then jq -c '.report' <<<"$(usage_cache)"; else echo '{"entries":[],"error":"ai-usagebar not found"}'; fi
+        return 0
+    }
+    out=$(timeout 90 "$bin" usage --json 2>/dev/null) || true
+    if [[ -z $out ]]; then
+        if [[ -n $(usage_cache) ]]; then jq -c '.report' <<<"$(usage_cache)"
+        else echo '{"entries":[],"error":"ai-usagebar returned nothing"}'; fi
+        return 0
+    fi
+    local report
+    report=$(printf '%s' "$out" | jq 'if (type == "object" and has("entries")) then
         {entries: [.entries[] | {id: .id, plan: .plan, status: .status,
                                   short: ([.metrics[]?.value] | join(" · ")),
                                   percent: ([.metrics[]?.percent] | max // 0),
                                   metrics: [.metrics[]? | {label, value, percent, detail, reset_at, severity}],
                                   error: .error}]}
-        else {entries: [], error: "unexpected ai-usagebar output"} end'
+        else {entries: [], error: "unexpected ai-usagebar output"} end')
+    printf '%s\n' "$report"
+    usage_cache "$report" || true
 }
 
 cmd_init() {
@@ -416,10 +633,14 @@ main() {
         ;;
     edit) cmd_edit ;;
     init) cmd_init "${2:-}" ;;
+    oauth-add)
+        shift
+        cmd_oauth_add "$@"
+        ;;
     migrate-glm) cmd_migrate_glm "${2:-}" ;;
     usage)
-        [[ ${2:-} == "--json" ]] || die "usage: skal-ccs usage --json"
-        cmd_usage_json
+        shift
+        cmd_usage_json "$@"
         ;;
     -h | --help | help) usage 0 ;;
     *) echo "unknown command: $1" >&2; usage 1 ;;

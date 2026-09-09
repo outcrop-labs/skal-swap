@@ -12,8 +12,14 @@
 #     name = Z.AI plan A
 #     base_url = https://api.z.ai/api/anthropic
 #     token = ...
-#     env.ANTHROPIC_DEFAULT_SONNET_MODEL = glm-5.3
 #     usage = zai          # optional: usage-account marker for the menu
+#
+# Model selection is settings.json's "model" key plus a "modelPicker" lineup
+# built from the endpoint's own catalogue, not the ANTHROPIC_DEFAULT_* slot
+# aliases and not ANTHROPIC_MODEL. The aliases leave the "model" pin in charge,
+# so a pin like "opus" follows you onto every endpoint; ANTHROPIC_MODEL fixes
+# that but outranks the pin, which would make /model inert mid-session. All
+# those keys stay in MANAGED_BASE so a switch clears any left behind.
 #
 # A profile with no token/base_url (e.g. [anthropic-login]) clears the
 # overrides and returns Claude Code to its OAuth login credentials.
@@ -21,7 +27,9 @@
 # `use` rewrites the managed ANTHROPIC_* keys in ~/.claude/settings.json's
 # env atomically: every managed key is removed first, then the target
 # profile's keys are written — so switching providers never leaves a stale
-# endpoint or model mapping behind. All other settings are untouched.
+# endpoint or model mapping behind. It also sets "model" and "modelPicker"
+# for the target endpoint, restoring the previous pin and the built-in picker
+# when you return to the OAuth profile. All other settings are untouched.
 # Already-running claude sessions keep the previous key until restarted.
 #
 # Overrides for testing: CCS_PROFILES, CCS_SETTINGS, GLM_KEYS.
@@ -48,9 +56,13 @@ readonly -a MANAGED_BASE=(
   ANTHROPIC_DEFAULT_HAIKU_MODEL
   ANTHROPIC_DEFAULT_SONNET_MODEL
   ANTHROPIC_DEFAULT_OPUS_MODEL
+  ANTHROPIC_CUSTOM_MODEL_OPTION
+  ANTHROPIC_CUSTOM_MODEL_OPTION_NAME
+  ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION
 )
 
 declare -A P_NAME=() P_BASE=() P_TOKEN=() P_USAGE=() P_ICON=() P_OAUTH=()
+declare -A P_MODEL=() P_MODELS_URL=()
 declare -a PROFILE_IDS=()
 declare -a ENV_LINES=()
 
@@ -65,6 +77,10 @@ usage: skal-ccs [command]
   status --json   {current, current_known, profiles[]} for the bar widget
   list            table of configured profiles
   use <id>        switch Claude Code to a profile
+                  [--model <model-id>] also pick the model, remembered per
+                  profile and written as settings.json's "model"
+  models [<id>]   models the endpoint reports, discovered from its own
+                  catalogue (* = active) [--refresh] [--json]
   swap            quick-toggle between the first two profiles (hotkey action)
   edit            open the profiles file in $EDITOR
   init            write an example profiles file
@@ -77,7 +93,7 @@ usage: skal-ccs [command]
                   (default 300; 0 = always fetch)
 
 profiles : ~/.config/skal.claude-code-switcher/profiles.conf
-settings : ~/.claude/settings.json (only env.ANTHROPIC_* keys are touched)
+settings : ~/.claude/settings.json (env.ANTHROPIC_*, model, modelPicker)
 EOF
     exit "${1:-0}"
 }
@@ -115,6 +131,8 @@ load_profiles() {
         [[ -n ${seen[$sec]+x} ]] || { seen[$sec]=1; PROFILE_IDS+=("$sec"); }
         case $key in
             name) P_NAME[$sec]=$val ;;
+            model) P_MODEL[$sec]=$val ;;
+            models_url) P_MODELS_URL[$sec]=$val ;;
             base_url) P_BASE[$sec]=$val ;;
             token) P_TOKEN[$sec]=$val ;;
             usage) P_USAGE[$sec]=$val ;;
@@ -124,6 +142,98 @@ load_profiles() {
             *) echo "skal-ccs: ignoring unknown key '$key' in [$sec]" >&2 ;;
         esac
     done < <(parse_profiles)
+}
+
+MODELS_DIR="$STATE_DIR/models"
+MODELS_TTL="${CCS_MODELS_TTL:-86400}"
+
+# Ask an endpoint what it serves. Anthropic-format gateways expose
+# GET /v1/models; ones that don't (Alibaba's token-plan gateway answers 404
+# "Not support") simply yield nothing and the profile's `model` key stands.
+# Claude Code's own CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY is no help
+# here: it keeps only ids containing "claude" or "anthropic".
+model_urls() { # model_urls <profile-id> -> candidate listing URLs, best first
+    local id=$1 base=${P_BASE[$id]:-} origin trimmed
+    [[ -n ${P_MODELS_URL[$id]:-} ]] && { printf '%s\n' "${P_MODELS_URL[$id]}"; return; }
+    [[ -n $base ]] || return 0
+    base=${base%/}
+    origin=$(printf '%s' "$base" | sed -E 's#^(https?://[^/]+).*#\1#')
+    trimmed=${base%/*}                      # drop the dialect segment (…/apps/anthropic -> …/apps)
+    # Anthropic-native first, then the OpenAI-compatible mode several
+    # providers park the catalogue under (Alibaba serves only that one).
+    printf '%s\n' \
+        "$base/v1/models?limit=1000" \
+        "$origin/compatible-mode/v1/models" \
+        "$trimmed/v1/models" \
+        "$origin/v1/models" \
+        | awk '!seen[$0]++'
+}
+
+fetch_models() { # fetch_models <profile-id> -> id \t display_name
+    local id=$1 tok=${P_TOKEN[$id]:-} url resp out
+    local -a auth=()
+    [[ -n $tok ]] && auth=(-H "authorization: Bearer $tok" -H "x-api-key: $tok")
+    while read -r url; do
+        [[ -n $url ]] || continue
+        resp=$(curl -sS -m 10 "$url" -H "anthropic-version: 2023-06-01" \
+            "${auth[@]}" 2>/dev/null) || continue
+        out=$(printf '%s' "$resp" \
+            | jq -r '.data // [] | .[] | select(.id) | [.id, (.display_name // .id)] | @tsv' 2>/dev/null) || continue
+        if [[ -n $out ]]; then
+            printf '%s\n' "$out"
+            return 0
+        fi
+    done < <(model_urls "$id")
+    return 1
+}
+
+models_cached() { # models_cached <profile-id> [--refresh]
+    local id=$1 refresh=${2:-} f="$MODELS_DIR/$id.tsv" now age
+    mkdir -p "$MODELS_DIR"
+    if [[ -s $f && $refresh != "--refresh" ]]; then
+        now=$(date +%s); age=$(( now - $(stat -c %Y "$f" 2>/dev/null || echo 0) ))
+        [[ $age -lt $MODELS_TTL ]] && { cat "$f"; return 0; }
+    fi
+    local out
+    if out=$(fetch_models "$id") && [[ -n $out ]]; then
+        printf '%s\n' "$out" >|"$f"
+        printf '%s\n' "$out"
+    else
+        [[ -s $f ]] && cat "$f"   # stale beats nothing
+    fi
+    return 0
+}
+
+cmd_models() {
+    local id="" refresh="" json=0 a
+    for a in "$@"; do
+        case $a in
+            --refresh) refresh=--refresh ;;
+            --json) json=1 ;;
+            *) id=$a ;;
+        esac
+    done
+    [[ -n $id ]] || { id=$(current_id) || die "no active profile — name one: skal-ccs models <id>"; }
+    [[ -n ${P_NAME[$id]+x} ]] || die "no profile '$id' (see: skal-ccs list)"
+    local tsv chosen
+    tsv=$(models_cached "$id" "$refresh")
+    chosen=$(model_of "$id")
+    if [[ $json == 1 ]]; then
+        printf '%s' "$tsv" | jq -R -s --arg cur "$chosen" --arg pid "$id" '
+            split("\n") | map(select(length > 0)) | map(split("\t"))
+            | {profile: $pid, current: (if $cur == "" then null else $cur end),
+               models: map({id: .[0], name: .[1], active: (.[0] == $cur)})}'
+        return
+    fi
+    if [[ -z $tsv ]]; then
+        echo "$id: endpoint serves no model list${chosen:+ — using $chosen from profiles.conf}"
+        return
+    fi
+    local mid mname
+    while IFS=$'\t' read -r mid mname; do
+        [[ -n $mid ]] || continue
+        printf '%s %-28s %s\n' "$([[ $mid == "$chosen" ]] && echo '*' || echo ' ')" "$mid" "$mname"
+    done <<<"$tsv"
 }
 
 host_of() {
@@ -183,6 +293,77 @@ icon_of() { # icon_of <profile-id>
 # with a warning rather than corrupting the store.
 
 is_oauth() { [[ ${P_OAUTH[$1]:-} == 1 ]]; }
+
+# Effective model for a profile: a model picked at switch time wins, then the
+# `model` key in profiles.conf. Empty means "say nothing" and let Claude Code
+# resolve its own default against the endpoint.
+model_state() { printf '%s/model-%s' "$STATE_DIR" "$1"; }
+
+model_of() { # model_of <profile-id>
+    local id=$1 f
+    f=$(model_state "$id")
+    if [[ -r $f ]]; then
+        local v; v=$(<"$f")
+        [[ -n $v ]] && { printf '%s' "$v"; return; }
+    fi
+    printf '%s' "${P_MODEL[$id]:-}"
+}
+
+set_model_for() { # set_model_for <profile-id> <model-id>
+    mkdir -p "$STATE_DIR"
+    printf '%s' "$2" >|"$(model_state "$1")"
+}
+
+PREV_MODEL="$STATE_DIR/prev-model"
+
+# The endpoint's catalogue as a modelPicker lineup. modelPicker replaces the
+# built-in list, so it is written only for endpoints that report models and
+# removed again when returning to the OAuth profile.
+picker_json() { # picker_json <profile-id>
+    local id=$1 tsv
+    tsv=$(models_cached "$id")
+    [[ -n $tsv ]] || { printf '[]'; return; }
+    printf '%s' "$tsv" | jq -R -s '
+        split("\n") | map(select(length > 0)) | map(split("\t"))
+        | map({model: .[0], name: .[1]})'
+}
+
+apply_model_selection() { # apply_model_selection <profile-id>
+    local id=$1 model picker cur
+    model=$(model_of "$id")
+    picker=$(picker_json "$id")
+
+    if is_oauth "$id" || [[ -z ${P_BASE[$id]:-} ]]; then
+        # Back to Anthropic: hand the picker back to the built-ins and restore
+        # whatever model pin was in place before the first third-party switch.
+        local prev=""
+        [[ -r $PREV_MODEL ]] && prev=$(<"$PREV_MODEL")
+        if [[ -n $prev ]]; then
+            rewrite "$SETTINGS" --arg m "$prev" '.model = $m | del(.modelPicker)'
+            rm -f "$PREV_MODEL"
+        else
+            rewrite "$SETTINGS" 'del(.modelPicker)'
+        fi
+        return
+    fi
+
+    if [[ ! -e $PREV_MODEL ]]; then
+        mkdir -p "$STATE_DIR"
+        cur=$(jq -r '.model // empty' "$SETTINGS" 2>/dev/null || true)
+        printf '%s' "$cur" >|"$PREV_MODEL"
+    fi
+
+    if [[ -n $model && $picker != "[]" ]]; then
+        rewrite "$SETTINGS" --arg m "$model" --argjson p "$picker" \
+            '.model = $m | .modelPicker = $p'
+    elif [[ -n $model ]]; then
+        rewrite "$SETTINGS" --arg m "$model" '.model = $m | del(.modelPicker)'
+    elif [[ $picker != "[]" ]]; then
+        rewrite "$SETTINGS" --argjson p "$picker" '.modelPicker = $p | del(.model)'
+    else
+        rewrite "$SETTINGS" 'del(.modelPicker)'
+    fi
+}
 
 store_path() { printf '%s/%s.json' "$CRED_DIR" "$1"; }
 
@@ -402,6 +583,12 @@ apply_profile() { # apply_profile <id>
     [[ -n ${P_TOKEN[$id]:-} ]] && pairs+=("ANTHROPIC_AUTH_TOKEN"$'\t'"${P_TOKEN[$id]}")
     [[ -n ${P_BASE[$id]:-} ]] && pairs+=("ANTHROPIC_BASE_URL"$'\t'"${P_BASE[$id]}")
 
+    # Model selection is applied separately, in apply_model_selection: it
+    # rides settings.json's "model" key rather than ANTHROPIC_MODEL, because
+    # the env var outranks the key and would override anything picked with
+    # /model mid-session. The managed env keys stay in MANAGED_BASE so an
+    # older profile's ANTHROPIC_MODEL still gets cleared here.
+
     local line pid key val
     for line in "${ENV_LINES[@]}"; do
         IFS=$'\t' read -r pid key val <<<"$line"
@@ -427,6 +614,7 @@ apply_profile() { # apply_profile <id>
         '.env = ((.env // {})
                  | with_entries(. as $e | select(($del_keys | index($e.key)) == null))
                  + $add_pairs)'
+    apply_model_selection "$id"
     chmod 600 "$SETTINGS"
 
     # Claude Code caches the *resolved* model id per entrypoint in
@@ -605,9 +793,6 @@ name = Z.AI coding plan
 base_url = https://api.z.ai/api/anthropic
 token = your-zai-token
 usage = zai
-env.ANTHROPIC_DEFAULT_SONNET_MODEL = glm-5.3
-env.ANTHROPIC_DEFAULT_OPUS_MODEL = glm-5.3
-env.ANTHROPIC_DEFAULT_HAIKU_MODEL = glm-5.3-flash
 
 [another-provider]
 name = Another provider
@@ -632,15 +817,6 @@ cmd_migrate_glm() {
     [[ ! -e $PROFILES || ${1:-} == "--force" ]] || die "$PROFILES exists (use --force to replace)"
     mkdir -p "$(dirname "$PROFILES")"
 
-    # Model-mapping env lifted from the live settings (they belong to the
-    # z.ai endpoint, so every imported z.ai profile carries them).
-    local -a model_env=()
-    while IFS=$'\t' read -r k v; do
-        model_env+=("env.$k = $v")
-    done < <(jq -r '.env // {} | to_entries
-                    | map(select(.key | startswith("ANTHROPIC_DEFAULT_")))
-                    | .[] | [.key, .value] | @tsv' "$SETTINGS" 2>/dev/null)
-
     local active_tok
     active_tok=$(settings_env ANTHROPIC_AUTH_TOKEN)
 
@@ -655,9 +831,6 @@ cmd_migrate_glm() {
         emit() { # emit <id> <name> <token>
             printf '[%s]\nname = "%s"\nbase_url = %s\ntoken = %s\nusage = zai\n' \
                 "$1" "$2" "$BASE_URL" "$3"
-            local line
-            for line in "${model_env[@]:-}"; do [[ -n $line ]] && printf '%s\n' "$line"
-            done
             printf '\n'
         }
 
@@ -693,9 +866,19 @@ main() {
         cmd_list
         ;;
     use)
-        [[ -n ${2:-} ]] || die "usage: skal-ccs use <id>"
+        [[ -n ${2:-} ]] || die "usage: skal-ccs use <id> [--model <model-id>]"
         load_profiles
+        if [[ ${3:-} == "--model" ]]; then
+            [[ -n ${4:-} ]] || die "usage: skal-ccs use <id> --model <model-id>"
+            [[ -n ${P_NAME[$2]+x} ]] || die "no profile '$2' (see: skal-ccs list)"
+            set_model_for "$2" "$4"
+        fi
         apply_profile "$2"
+        ;;
+    models)
+        shift
+        load_profiles
+        cmd_models "$@"
         ;;
     swap)
         load_profiles

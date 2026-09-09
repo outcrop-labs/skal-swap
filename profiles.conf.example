@@ -14,9 +14,6 @@ name = Z.AI coding plan
 base_url = https://api.z.ai/api/anthropic
 token = your-zai-token
 usage = zai
-env.ANTHROPIC_DEFAULT_SONNET_MODEL = glm-5.3
-env.ANTHROPIC_DEFAULT_OPUS_MODEL = glm-5.3
-env.ANTHROPIC_DEFAULT_HAIKU_MODEL = glm-5.3-flash
 
 [another-provider]
 name = Another provider
@@ -29,9 +26,6 @@ token = another-token
 name = Alibaba Qwen
 base_url = https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic
 token = sk-sp-…
-env.ANTHROPIC_DEFAULT_SONNET_MODEL = qwen3.8-flash
-env.ANTHROPIC_DEFAULT_OPUS_MODEL = qwen3.8-max
-env.ANTHROPIC_DEFAULT_HAIKU_MODEL = qwen3.8-flash
 
 [anthropic-login]
 name = Claude (OAuth)

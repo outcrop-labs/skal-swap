@@ -42,7 +42,9 @@ your two most-used profiles. Every switch announces itself with a toast.
   keybinding, or a manual edit (file watchers + slow poll)
 - **Quota/usage across the board** — progress bars and percentages per
   account, per key where the provider allows it (see below)
-- Companion CLI: `skal-ccs status | list | use <id> | swap | edit | init`
+- Models discovered from each endpoint's own catalogue and offered in
+  Claude Code's `/model` picker, so one profile isn't one model
+- Companion CLI: `skal-ccs status | list | use <id> | models | swap | edit | init`
 
 ### Usage coverage
 
@@ -110,22 +112,55 @@ per section (see `profiles.conf.example`):
 name = Z.AI plan A
 base_url = https://api.z.ai/api/anthropic
 token = ...
+model = glm-5.3
 usage = zai
-env.ANTHROPIC_DEFAULT_SONNET_MODEL = glm-5.3
 
 [anthropic-login]
 name = Claude (OAuth)
 ```
+
+`model` is the starting model for the endpoint; omit it and Claude Code picks
+from the discovered list. Don't use the
+`ANTHROPIC_DEFAULT_{SONNET,OPUS,HAIKU}_MODEL` aliases: they leave the
+top-level `"model"` pin in `~/.claude/settings.json` in charge, so a pin like
+`"opus"` follows you onto every endpoint and the gateway is asked for a model
+it doesn't serve. The switcher sets that pin itself, and restores your
+previous one when you switch back to the OAuth profile.
 
 | key | meaning |
 | --- | --- |
 | `name` | label in the bar, menu, and toasts |
 | `base_url` | Anthropic-compatible endpoint; omit for the official API |
 | `token` | API token; omit to fall back to Claude Code's OAuth login |
-| `env.<NAME>` | extra env written with the profile (e.g. model mappings) |
+| `model` | starting model id for this endpoint (optional; the rest of the lineup is discovered) |
+| `models_url` | optional override for the model-catalogue URL, when probing doesn't find it |
+| `env.<NAME>` | extra env written with the profile |
 | `usage` | optional per-key usage marker (`zai`, `openrouter`, `deepseek`, `kimi`, `kilo`, `novita`, `moonshot`, `grok`, `minimax`, `opencode-go`) |
 | `icon` | optional provider-mark override (`zai`, `openai`, `qwen`, …) |
 | `oauth` | `true` for adopted OAuth-login profiles (see below) |
+
+### Models per endpoint
+
+Each endpoint is asked what it serves rather than having its models hardcoded.
+`skal-ccs models` lists them, and every switch writes the lineup into
+`modelPicker`, so `/model` moves between them inside a session:
+
+```bash
+skal-ccs models                     # models on the active profile (* = active)
+skal-ccs models zai-plan-a --refresh
+skal-ccs use zai-plan-a --model glm-5.3-flash   # remembered for that profile
+```
+
+Discovery probes the endpoint's own catalogue: `/v1/models` on the base URL
+first, then the OpenAI-compatible `/compatible-mode/v1/models` several
+providers park it under. Results are cached for a day (`CCS_MODELS_TTL`), a
+stale list beats none, and `models_url` overrides the probe. An endpoint that
+publishes nothing simply keeps the profile's `model`. Claude Code's own
+`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` doesn't cover this case: it keeps
+only model ids containing `claude` or `anthropic`.
+
+Note that a catalogue may list non-chat models — Alibaba's token plan includes
+image and audio ids — and they appear in the picker as published.
 
 ### Multiple Claude OAuth logins
 
@@ -162,10 +197,11 @@ gateway; a profile is just the endpoint plus the plan's model ids:
 name = Alibaba Qwen
 base_url = https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic
 token = sk-sp-…
-env.ANTHROPIC_DEFAULT_SONNET_MODEL = qwen3.8-flash
-env.ANTHROPIC_DEFAULT_OPUS_MODEL = qwen3.8-max
-env.ANTHROPIC_DEFAULT_HAIKU_MODEL = qwen3.8-flash
+model = qwen3.8-flash
 ```
+
+One profile names one model; add a second profile against the same endpoint
+and token to keep another of the plan's model ids a click away.
 
 Use the regional host your key belongs to (`ap-southeast-1` above; the
 pay-as-you-go Model Studio endpoint is `dashscope.aliyuncs.com/apps/anthropic`
@@ -216,8 +252,12 @@ settings UI): `icon` (`Logo` / `Glyph` / `None`), `labelStyle` (`Name` /
 
 **What this writes, by design and only when you ask it to:** `skal-ccs use` /
 `swap` (from the menu, terminal, or a keybind) rewrite the managed
-`ANTHROPIC_*` keys inside the `env` object of `~/.claude/settings.json`;
-nothing else in that file is modified. They also drop the
+`ANTHROPIC_*` keys inside the `env` object of `~/.claude/settings.json`, and
+set that file's top-level `model` and `modelPicker` for the endpoint you
+switched to — `modelPicker` replaces the built-in lineup, so returning to the
+OAuth profile removes it again and restores the `model` pin you had before
+the first third-party switch. Nothing else in that file is modified. They
+also drop the
 `clientDataCacheSlots` key from `~/.claude.json` — Claude Code caches the
 *resolved* model id there per entrypoint, keyed without regard to
 `ANTHROPIC_BASE_URL`, so a slot filled under the OAuth profile otherwise
@@ -232,7 +272,9 @@ toast reminds you.
 ```
 skal-ccs status [ --json ]   which profile is active (JSON drives the widget)
 skal-ccs list                configured profiles
-skal-ccs use <id>            switch
+skal-ccs use <id>            switch  [--model <id>] pick the model too
+skal-ccs models [<id>]       models the endpoint reports (* = active)
+                             [--refresh] [--json]
 skal-ccs swap                quick-toggle between the first two profiles
 skal-ccs edit                open the profiles file in $EDITOR
 skal-ccs init                write an example profiles file

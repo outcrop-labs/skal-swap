@@ -293,12 +293,56 @@ cmd_oauth_add() { # cmd_oauth_add <id> [--name N] [--force]
 # Same label rule as the ai-usagebar multi-account shim, so usage ids match.
 sanitize_label() { printf '%s' "$1" | sed 's/[^A-Za-z0-9_.-]/_/g'; }
 
-usage_id_of() { # <profile-id> -> "zai@label" or ""
-    local id=$1 vendor=${P_USAGE[$id]:-}
-    [[ -n $vendor ]] || return 0
-    local label=${P_NAME[$id]:-}
-    [[ -n $label ]] || label=$id
-    echo "$vendor@$(sanitize_label "$label")"
+# ai-usagebar vendors fetchable per-key (the shim synthesizes a config for
+# each). Entry ids in the usage report equal these names.
+readonly -a USAGE_VENDORS=(zai openrouter deepseek kimi kilo novita moonshot grok minimax opencode-go)
+
+usage_vendor_of_host() { # -> vendor name, or fails for uncovered hosts
+    case $1 in
+    api.z.ai | z.ai | open.bigmodel.cn) echo zai ;;
+    openrouter.ai | api.openrouter.ai) echo openrouter ;;
+    api.deepseek.com | deepseek.com | api.deepseek.cn) echo deepseek ;;
+    api.moonshot.cn) echo moonshot ;;
+    api.moonshot.ai | kimi.com | api.kimi.com) echo kimi ;;
+    kilo.ai | api.kilo.ai) echo kilo ;;
+    api.novita.ai | novita.ai) echo novita ;;
+    api.x.ai | x.ai) echo grok ;;
+    api.minimax.io | minimax.io | api.minimaxi.com) echo minimax ;;
+    opencode.ai | api.opencode.ai) echo opencode-go ;;
+    api.anthropic.com) echo anthropic ;;
+    *) return 1 ;;
+    esac
+}
+
+usage_id_of() { # usage_id_of <profile-id> <current-id> -> usage entry id or ""
+    local id=$1 cur=$2 marker=${P_USAGE[$id]:-} vendor p
+    if [[ -n $marker ]]; then
+        for v in "${USAGE_VENDORS[@]}"; do
+            [[ $v == "$marker" ]] || continue
+            local label=${P_NAME[$id]:-}
+            [[ -n $label ]] || label=$id
+            echo "$marker@$(sanitize_label "$label")"
+            return 0
+        done
+        return 0 # unknown marker: no usage
+    fi
+    vendor=$(usage_vendor_of_host "$(host_of "${P_BASE[$id]:-}")") || return 0
+    if [[ $vendor == anthropic ]]; then
+        # The anthropic entry reports the LIVE OAuth credentials, which our
+        # OAuth switching swaps — attach it to the current profile only.
+        [[ $cur == "$id" ]] && echo anthropic
+        return 0
+    fi
+    # A key vendor's stock entry reflects one account. Attach it when this
+    # is the only profile on that host; with several, ask for usage markers
+    # (otherwise every row would show the same account's numbers).
+    for p in "${PROFILE_IDS[@]}"; do
+        [[ $p != "$id" ]] || continue
+        if [[ $(usage_vendor_of_host "$(host_of "${P_BASE[$p]:-}")") == "$vendor" ]]; then
+            return 0
+        fi
+    done
+    echo "$vendor"
 }
 
 settings_env() { jq -r --arg k "$1" '.env[$k] // empty' "$SETTINGS" 2>/dev/null || true; }
@@ -400,7 +444,7 @@ status_json() {
     for id in "${PROFILE_IDS[@]}"; do
         prefix=${P_TOKEN[$id]:-}
         [[ -n $prefix ]] && prefix=$(mask "$prefix")
-        uid=$(usage_id_of "$id")
+        uid=$(usage_id_of "$id" "$cur")
         tsv+="$id"$'\t'"${P_NAME[$id]:-}"$'\t'"$(host_of "${P_BASE[$id]:-}")"$'\t'"$prefix"$'\t'"$uid"$'\t'"$(icon_of "$id")"$'\t'"$(is_oauth "$id" && echo 1 || echo 0)"$'\n'
     done
     printf '%s' "$tsv" | jq -R -s --arg cur "$cur" --arg settings "$SETTINGS" '

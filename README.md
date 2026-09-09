@@ -38,7 +38,22 @@ your two most-used profiles. Every switch announces itself with a toast.
   `env.ANTHROPIC_*` is untouched (file mode tightened to 600)
 - Stays in sync no matter what changed the profile — menu, terminal CLI,
   keybinding, or a manual edit (file watchers + slow poll)
+- **Quota/usage across the board** — progress bars and percentages per
+  account, per key where the provider allows it (see below)
 - Companion CLI: `skal-ccs status | list | use <id> | swap | edit | init`
+
+### Usage coverage
+
+Per-key usage (add `usage = <vendor>` to a profile) works for **z.ai,
+OpenRouter, DeepSeek, Kimi/Moonshot, Kilo, Novita, xAI (grok), MiniMax and
+opencode zen** — each key is fetched under its own isolated account. For a
+provider you only have one profile on, usage attaches automatically with no
+marker at all. Claude OAuth usage follows the live login: the active OAuth
+profile shows the session/weekly windows of whatever account is actually
+logged in. Providers without a public usage API (e.g. Alibaba's token-plan
+gateways) show no bars. All of this rides on
+[ai-usagebar](https://github.com/akitaonrails/ai-usagebar) being installed;
+without it the switcher works fine, just without usage readouts.
 
 ## Install
 
@@ -105,7 +120,7 @@ name = Claude (OAuth)
 | `base_url` | Anthropic-compatible endpoint; omit for the official API |
 | `token` | API token; omit to fall back to Claude Code's OAuth login |
 | `env.<NAME>` | extra env written with the profile (e.g. model mappings) |
-| `usage` | optional account marker for usage display (`zai`) |
+| `usage` | optional per-key usage marker (`zai`, `openrouter`, `deepseek`, `kimi`, `kilo`, `novita`, `moonshot`, `grok`, `minimax`, `opencode-go`) |
 | `icon` | optional provider-mark override (`zai`, `openai`, `qwen`, …) |
 | `oauth` | `true` for adopted OAuth-login profiles (see below) |
 

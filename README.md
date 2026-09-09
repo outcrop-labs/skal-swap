@@ -134,6 +134,7 @@ previous one when you switch back to the OAuth profile.
 | `token` | API token; omit to fall back to Claude Code's OAuth login |
 | `model` | starting model id for this endpoint (optional; the rest of the lineup is discovered) |
 | `models_url` | optional override for the model-catalogue URL, when probing doesn't find it |
+| `behaves_as` | id of a model this Claude Code build knows, whose client-side handling (prompt profile, capability and effort defaults) applies to this endpoint's ids |
 | `env.<NAME>` | extra env written with the profile |
 | `usage` | optional per-key usage marker (`zai`, `openrouter`, `deepseek`, `kimi`, `kilo`, `novita`, `moonshot`, `grok`, `minimax`, `opencode-go`) |
 | `icon` | optional provider-mark override (`zai`, `openai`, `qwen`, …) |
@@ -161,6 +162,15 @@ only model ids containing `claude` or `anthropic`.
 
 Note that a catalogue may list non-chat models — Alibaba's token plan includes
 image and audio ids — and they appear in the picker as published.
+
+`behaves_as` matters more than it looks. A model id this Claude Code build
+doesn't know is treated as a current model, so it receives the full modern
+feature set — newer tool-schema fields, adaptive thinking, effort — and a
+gateway that doesn't implement those rejects the request outright. Naming a
+model the build does know (`claude-sonnet-4-5`, say) pins the client-side
+handling to that model's defaults instead. The picker is also written with
+`replaceBuiltInOptions`, since the built-in Claude ids aren't served by these
+endpoints.
 
 ### Multiple Claude OAuth logins
 

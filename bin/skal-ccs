@@ -62,7 +62,7 @@ readonly -a MANAGED_BASE=(
 )
 
 declare -A P_NAME=() P_BASE=() P_TOKEN=() P_USAGE=() P_ICON=() P_OAUTH=()
-declare -A P_MODEL=() P_MODELS_URL=()
+declare -A P_MODEL=() P_MODELS_URL=() P_BEHAVES_AS=()
 declare -a PROFILE_IDS=()
 declare -a ENV_LINES=()
 
@@ -133,6 +133,7 @@ load_profiles() {
             name) P_NAME[$sec]=$val ;;
             model) P_MODEL[$sec]=$val ;;
             models_url) P_MODELS_URL[$sec]=$val ;;
+            behaves_as) P_BEHAVES_AS[$sec]=$val ;;
             base_url) P_BASE[$sec]=$val ;;
             token) P_TOKEN[$sec]=$val ;;
             usage) P_USAGE[$sec]=$val ;;
@@ -322,10 +323,21 @@ PREV_MODEL="$STATE_DIR/prev-model"
 picker_json() { # picker_json <profile-id>
     local id=$1 tsv
     tsv=$(models_cached "$id")
-    [[ -n $tsv ]] || { printf '[]'; return; }
-    printf '%s' "$tsv" | jq -R -s '
-        split("\n") | map(select(length > 0)) | map(split("\t"))
-        | map({model: .[0], name: .[1]})'
+    [[ -n $tsv ]] || { printf 'null'; return; }
+    # Schema: an object with an "options" array of {model, label?,
+    # description?, behavesAs?} rows — not a bare array.
+    #
+    # behaves_as names a model this Claude Code build knows, and its
+    # client-side handling (prompt profile, capability and effort defaults)
+    # is used for these ids. Without it an unknown id is treated as a current
+    # model and gets the full modern feature set, which older gateways reject.
+    # replaceBuiltInOptions hides the built-in Claude ids: this endpoint
+    # doesn't serve them.
+    printf '%s' "$tsv" | jq -R -s --arg b "${P_BEHAVES_AS[$id]:-}" '
+        {options: (split("\n") | map(select(length > 0)) | map(split("\t"))
+                   | map({model: .[0], label: .[1]}
+                         + (if $b == "" then {} else {behavesAs: $b} end))),
+         replaceBuiltInOptions: true}'
 }
 
 apply_model_selection() { # apply_model_selection <profile-id>
@@ -353,12 +365,12 @@ apply_model_selection() { # apply_model_selection <profile-id>
         printf '%s' "$cur" >|"$PREV_MODEL"
     fi
 
-    if [[ -n $model && $picker != "[]" ]]; then
+    if [[ -n $model && $picker != "null" ]]; then
         rewrite "$SETTINGS" --arg m "$model" --argjson p "$picker" \
             '.model = $m | .modelPicker = $p'
     elif [[ -n $model ]]; then
         rewrite "$SETTINGS" --arg m "$model" '.model = $m | del(.modelPicker)'
-    elif [[ $picker != "[]" ]]; then
+    elif [[ $picker != "null" ]]; then
         rewrite "$SETTINGS" --argjson p "$picker" '.modelPicker = $p | del(.model)'
     else
         rewrite "$SETTINGS" 'del(.modelPicker)'

@@ -127,18 +127,31 @@ And remove the keybind if you added one.
 
 ```ini
 [zai-plan-a]
+base_url = https://api.z.ai/api/anthropic
+token = ...
+
+[anthropic-login]
+```
+
+That's a complete, working profile. **`base_url` and `token` are the only
+things you have to supply**; everything else is optional and gets worked out
+for you. The label falls back to the endpoint host, the model to the newest
+one the endpoint reports, and the capability floor to something that won't
+get your requests rejected. A section with neither key is your Claude OAuth
+login.
+
+Fill in more when you want to override any of that:
+
+```ini
+[zai-plan-a]
 name = Z.AI plan A
 base_url = https://api.z.ai/api/anthropic
 token = ...
 model = glm-5.3
 usage = zai
-
-[anthropic-login]
-name = Claude (OAuth)
 ```
 
-`model` is just where you start; leave it out and Claude Code picks from
-whatever the endpoint reports. Don't reach for the
+Don't reach for the
 `ANTHROPIC_DEFAULT_{SONNET,OPUS,HAIKU}_MODEL` variables — they map the
 aliases but leave the top-level `"model"` pin in `~/.claude/settings.json`
 running the show, so a pin of `"opus"` cheerfully follows you onto a GLM
@@ -147,12 +160,12 @@ old one back when you return to the OAuth profile.
 
 | key | meaning |
 | --- | --- |
-| `name` | label in the bar, menu, and toasts |
-| `base_url` | Anthropic-compatible endpoint; omit for the official API |
-| `token` | API token; omit to fall back to Claude Code's OAuth login |
-| `model` | starting model id for this endpoint (optional; the rest of the lineup is discovered) |
-| `models_url` | optional override for the model-catalogue URL, when probing doesn't find it |
-| `behaves_as` | id of a model this Claude Code build knows, whose client-side handling (prompt profile, capability and effort defaults) applies to this endpoint's ids |
+| `base_url` | **required** for a provider profile; omit it and you get the official API / OAuth login |
+| `token` | **required** for a provider profile; omit to fall back to Claude Code's OAuth login |
+| `name` | optional label for the bar, menu and toasts; defaults to the endpoint host |
+| `model` | optional starting model; defaults to the newest chat model the endpoint reports |
+| `models_url` | optional override for the model-catalogue URL, if the probe can't find it |
+| `behaves_as` | optional capability floor — id of a model your Claude Code build knows, whose prompt profile, capability and effort defaults get used. Defaults to `claude-sonnet-4-5` for any profile with a `base_url` |
 | `env.<NAME>` | extra env written with the profile |
 | `usage` | optional per-key usage marker (`zai`, `openrouter`, `deepseek`, `kimi`, `kilo`, `novita`, `moonshot`, `grok`, `minimax`, `opencode-go`) |
 | `icon` | optional provider-mark override (`zai`, `openai`, `qwen`, …) |
@@ -179,16 +192,24 @@ its own `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`, which is no use here: it
 throws away any model id that doesn't contain `claude` or `anthropic`, which
 is to say, all of them.
 
-Catalogues aren't always tidy — Alibaba's token plan lists image and audio
-models too, and they show up in the picker exactly as published.
+Catalogues aren't always tidy. Alibaba's token plan cheerfully lists image
+and audio models alongside the chat ones, so anything that looks like audio,
+image, video, speech, embedding or reranking gets dropped before it reaches
+the picker. What's left is sorted newest first, and where two models share a
+release date the full-fat one wins over the `-flash`/`-mini`/`-lite` variant,
+which is also how the automatic pick gets chosen when you haven't set
+`model`.
 
 `behaves_as` looks like a footnote and isn't. Hand Claude Code a model id it's
 never heard of and it assumes the best: current model, so it sends the full
 modern kit — new tool-schema fields, adaptive thinking, effort — and a gateway
-that hasn't caught up throws the whole request back at you. Point `behaves_as`
-at a model your Claude Code build does know (`claude-sonnet-4-5` is a safe
-floor) and it uses that model's defaults instead. The picker also sets
-`replaceBuiltInOptions`, because listing Opus on a GLM endpoint helps nobody.
+that hasn't caught up throws the whole request back at you. So every profile
+with a `base_url` gets `claude-sonnet-4-5` as a floor unless you say
+otherwise, which is why you don't have to think about this. Set `behaves_as`
+yourself if your endpoint keeps up with Anthropic and you want the newer
+behaviour, or `CCS_BEHAVES_AS` to move the default. The picker also sets
+`replaceBuiltInOptions`, because listing Opus on a GLM endpoint helps
+nobody.
 
 ### Multiple Claude OAuth logins
 

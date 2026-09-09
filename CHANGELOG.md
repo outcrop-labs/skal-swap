@@ -23,6 +23,22 @@ profiles and OAuth bundles.
   `skal-swap use <id> --model <model-id>`, the latter remembered per profile.
 - New profile keys: `model`, `models_url`, `behaves_as`.
 
+### Only the URL and the key are required
+
+- A profile needs `base_url` and `token` and nothing else. `name` falls back
+  to the endpoint host, `model` to the newest chat model the endpoint reports,
+  and `behaves_as` to `claude-sonnet-4-5` for any profile with a `base_url`
+  (`CCS_BEHAVES_AS` moves that default). Everything else was already optional.
+- Fixed: a profile without a `name` could be listed but not used. `name` was
+  doubling as the existence check, so `use`, `models` and `oauth-add` all
+  rejected a section that hadn't set one.
+- Discovered catalogues are filtered to chat models — anything matching audio,
+  image, video, speech, embedding or reranking is dropped, which keeps
+  Alibaba's image and TTS ids out of the picker — then sorted newest first,
+  preferring the full model over its `-flash`/`-mini`/`-lite` sibling when
+  two share a release date. That ordering is also what picks the model when a
+  profile doesn't name one.
+
 ### Fixes
 
 - Model selection no longer goes through the `ANTHROPIC_DEFAULT_*` slot

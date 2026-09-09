@@ -63,6 +63,7 @@ readonly -a MANAGED_BASE=(
 
 declare -A P_NAME=() P_BASE=() P_TOKEN=() P_USAGE=() P_ICON=() P_OAUTH=()
 declare -A P_MODEL=() P_MODELS_URL=() P_BEHAVES_AS=()
+declare -A PROFILE_SET=()
 declare -a PROFILE_IDS=()
 declare -a ENV_LINES=()
 
@@ -128,7 +129,7 @@ load_profiles() {
     local sec key val
     local -A seen=()
     while IFS=$'\t' read -r sec key val; do
-        [[ -n ${seen[$sec]+x} ]] || { seen[$sec]=1; PROFILE_IDS+=("$sec"); }
+        [[ -n ${seen[$sec]+x} ]] || { seen[$sec]=1; PROFILE_IDS+=("$sec"); PROFILE_SET[$sec]=1; }
         case $key in
             name) P_NAME[$sec]=$val ;;
             model) P_MODEL[$sec]=$val ;;
@@ -147,6 +148,7 @@ load_profiles() {
 
 MODELS_DIR="$STATE_DIR/models"
 MODELS_TTL="${CCS_MODELS_TTL:-86400}"
+BEHAVES_AS_DEFAULT="${CCS_BEHAVES_AS:-claude-sonnet-4-5}"
 
 # Ask an endpoint what it serves. Anthropic-format gateways expose
 # GET /v1/models; ones that don't (Alibaba's token-plan gateway answers 404
@@ -179,7 +181,15 @@ fetch_models() { # fetch_models <profile-id> -> id \t display_name
         resp=$(curl -sS -m 10 "$url" -H "anthropic-version: 2023-06-01" \
             "${auth[@]}" 2>/dev/null) || continue
         out=$(printf '%s' "$resp" \
-            | jq -r '.data // [] | .[] | select(.id) | [.id, (.display_name // .id)] | @tsv' 2>/dev/null) || continue
+            | jq -r '.data // [] | map(select(.id))
+                     | map(select(.id | ascii_downcase
+                           | test("audio|image|video|tts|asr|realtime|embed|rerank|ocr|speech|voice|whisper|diffusion") | not))
+                     | map(. + {_c: ((.created_at // .created // "") | tostring),
+                                _full: (if (.id | ascii_downcase
+                                        | test("flash|air|mini|lite|turbo|small|nano"))
+                                        then 0 else 1 end)})
+                     | sort_by([._c, ._full]) | reverse
+                     | .[] | [.id, (.display_name // .id)] | @tsv' 2>/dev/null) || continue
         if [[ -n $out ]]; then
             printf '%s\n' "$out"
             return 0
@@ -215,7 +225,7 @@ cmd_models() {
         esac
     done
     [[ -n $id ]] || { id=$(current_id) || die "no active profile — name one: skal-swap models <id>"; }
-    [[ -n ${P_NAME[$id]+x} ]] || die "no profile '$id' (see: skal-swap list)"
+    [[ -n ${PROFILE_SET[$id]:-} ]] || die "no profile '$id' (see: skal-swap list)"
     local tsv chosen
     tsv=$(models_cached "$id" "$refresh")
     chosen=$(model_of "$id")
@@ -242,6 +252,14 @@ host_of() {
     [[ -n $u ]] || { echo "api.anthropic.com"; return; }
     u=${u#*://}
     echo "${u%%/*}"
+}
+
+# Display label: `name` if given, else the endpoint host, else the section id.
+label_of() { # label_of <profile-id>
+    local id=$1
+    [[ -n ${P_NAME[$id]:-} ]] && { printf '%s' "${P_NAME[$id]}"; return; }
+    [[ -n ${P_BASE[$id]:-} ]] && { host_of "${P_BASE[$id]}"; return; }
+    printf '%s' "$id"
 }
 
 # Provider mark for a profile (an asset in assets/providers/<name>.svg).
@@ -307,7 +325,9 @@ model_of() { # model_of <profile-id>
         local v; v=$(<"$f")
         [[ -n $v ]] && { printf '%s' "$v"; return; }
     fi
-    printf '%s' "${P_MODEL[$id]:-}"
+    [[ -n ${P_MODEL[$id]:-} ]] && { printf '%s' "${P_MODEL[$id]}"; return; }
+    # Nothing configured: take the newest model the endpoint reports.
+    models_cached "$id" 2>/dev/null | head -1 | cut -f1
 }
 
 set_model_for() { # set_model_for <profile-id> <model-id>
@@ -333,7 +353,13 @@ picker_json() { # picker_json <profile-id>
     # model and gets the full modern feature set, which older gateways reject.
     # replaceBuiltInOptions hides the built-in Claude ids: this endpoint
     # doesn't serve them.
-    printf '%s' "$tsv" | jq -R -s --arg b "${P_BEHAVES_AS[$id]:-}" '
+    # Default the capability floor for any third-party endpoint. Without it
+    # Claude Code treats an unknown id as a current model and sends the full
+    # modern feature set, which plenty of gateways reject outright. Override
+    # per profile with behaves_as when your endpoint keeps up.
+    local behaves=${P_BEHAVES_AS[$id]:-}
+    [[ -z $behaves && -n ${P_BASE[$id]:-} ]] && behaves=$BEHAVES_AS_DEFAULT
+    printf '%s' "$tsv" | jq -R -s --arg b "$behaves" '
         {options: (split("\n") | map(select(length > 0)) | map(split("\t"))
                    | map({model: .[0], label: .[1]}
                          + (if $b == "" then {} else {behavesAs: $b} end))),
@@ -458,8 +484,8 @@ cmd_oauth_add() { # cmd_oauth_add <id> [--name N] [--force]
     jq -e '.claudeAiOauth != null' "$CREDS" >/dev/null 2>&1 || die "no OAuth session in $CREDS — log in first (claude /login)"
 
     load_profiles
-    [[ -z ${P_NAME[$id]+x} || $force == 1 ]] || die "profile [$id] exists (use --force to refresh its store)"
-    if [[ -z ${P_NAME[$id]+x} ]]; then
+    [[ -z ${PROFILE_SET[$id]:-} || $force == 1 ]] || die "profile [$id] exists (use --force to refresh its store)"
+    if [[ -z ${PROFILE_SET[$id]:-} ]]; then
         name=${name:-$(jq -r '.oauthAccount.displayName // .oauthAccount.emailAddress // "Claude login"' "$CLAUDE_JSON")}
         printf '\n[%s]\nname = "%s"\noauth = true\n' "$id" "$name" >>"$PROFILES"
     fi
@@ -512,7 +538,7 @@ usage_id_of() { # usage_id_of <profile-id> <current-id> -> usage entry id or ""
     if [[ -n $marker ]]; then
         for v in "${USAGE_VENDORS[@]}"; do
             [[ $v == "$marker" ]] || continue
-            local label=${P_NAME[$id]:-}
+            local label=$(label_of "$id")
             [[ -n $label ]] || label=$id
             echo "$marker@$(sanitize_label "$label")"
             return 0
@@ -553,7 +579,7 @@ current_id() {
         return 1
     fi
     oa=$(active_oauth)
-    if [[ -n $oa && -n ${P_NAME[$oa]+x} && -z ${P_TOKEN[$oa]:-} ]]; then
+    if [[ -n $oa && -n ${PROFILE_SET[$oa]:-} && -z ${P_TOKEN[$oa]:-} ]]; then
         echo "$oa"; return 0
     fi
     for id in "${PROFILE_IDS[@]}"; do
@@ -584,7 +610,7 @@ rewrite() { # rewrite <file> <jq-args…> (filter last) — atomic, keeps inode/
 
 apply_profile() { # apply_profile <id>
     local id=$1
-    [[ -n ${P_NAME[$id]+x} ]] || die "no profile '$id' (see: skal-swap list)"
+    [[ -n ${PROFILE_SET[$id]:-} ]] || die "no profile '$id' (see: skal-swap list)"
     [[ -f $SETTINGS ]] || die "no $SETTINGS — run claude once first"
 
     # Leaving (or re-applying) an OAuth profile: persist the live session's
@@ -645,7 +671,7 @@ apply_profile() { # apply_profile <id>
     else
         write_oauth_state ""
     fi
-    echo "switched to ${P_NAME[$id]:-$id} — restart running claude sessions to pick it up"
+    echo "switched to $(label_of "$id") — restart running claude sessions to pick it up"
 }
 
 status_json() {
@@ -656,7 +682,7 @@ status_json() {
         prefix=${P_TOKEN[$id]:-}
         [[ -n $prefix ]] && prefix=$(mask "$prefix")
         uid=$(usage_id_of "$id" "$cur")
-        tsv+="$id"$'\t'"${P_NAME[$id]:-}"$'\t'"$(host_of "${P_BASE[$id]:-}")"$'\t'"$prefix"$'\t'"$uid"$'\t'"$(icon_of "$id")"$'\t'"$(is_oauth "$id" && echo 1 || echo 0)"$'\n'
+        tsv+="$id"$'\t'"$(label_of "$id")"$'\t'"$(host_of "${P_BASE[$id]:-}")"$'\t'"$prefix"$'\t'"$uid"$'\t'"$(icon_of "$id")"$'\t'"$(is_oauth "$id" && echo 1 || echo 0)"$'\n'
     done
     printf '%s' "$tsv" | jq -R -s --arg cur "$cur" --arg settings "$SETTINGS" '
         split("\n") | map(select(length > 0)) | map(split("\t"))
@@ -676,7 +702,7 @@ status_human() {
         local key_desc="login"
         is_oauth "$cur" && key_desc="oauth"
         [[ -n ${P_TOKEN[$cur]:-} ]] && key_desc=$(mask "${P_TOKEN[$cur]}")
-        echo "claude code : ${P_NAME[$cur]:-$cur} ($key_desc) @ $(host_of "${P_BASE[$cur]:-}")"
+        echo "claude code : $(label_of "$cur") ($key_desc) @ $(host_of "${P_BASE[$cur]:-}")"
     else
         local tok
         tok=$(settings_env ANTHROPIC_AUTH_TOKEN)
@@ -684,7 +710,7 @@ status_human() {
     fi
     for id in "${PROFILE_IDS[@]}"; do
         [[ $id == "$cur" ]] && continue
-        echo "   switch to: ${P_NAME[$id]:-$id} ($(mask "${P_TOKEN[$id]:-none}")) @ $(host_of "${P_BASE[$id]:-}")"
+        echo "   switch to: $(label_of "$id") ($(mask "${P_TOKEN[$id]:-none}")) @ $(host_of "${P_BASE[$id]:-}")"
     done
     return 0
 }
@@ -695,7 +721,7 @@ cmd_list() {
     printf '%-2s %-16s %-28s %-24s %s\n' "" ID NAME HOST KEY
     for id in "${PROFILE_IDS[@]}"; do
         [[ $id == "$cur" ]] && marker="*" || marker=" "
-        printf '%-2s %-16s %-28s %-24s %s\n' "$marker" "$id" "${P_NAME[$id]:-}" \
+        printf '%-2s %-16s %-28s %-24s %s\n' "$marker" "$id" "$(label_of "$id")" \
             "$(host_of "${P_BASE[$id]:-}")" "$([[ -n ${P_TOKEN[$id]:-} ]] && mask "${P_TOKEN[$id]}" || echo "(login)")"
     done
 }
@@ -790,29 +816,31 @@ cmd_init() {
     [[ ! -e $PROFILES || ${1:-} == "--force" ]] || die "$PROFILES already exists (use --force to replace)"
     mkdir -p "$(dirname "$PROFILES")"
     cat >"$PROFILES" <<'EOF'
-# Claude Code API profiles for the skal.swap plugin.
+# Claude Code provider profiles for the skal.swap plugin.
 # This file holds secrets: keep it chmod 600 and never commit it.
 #
-# [section-id]         what `skal-swap use <section-id>` switches to
-#   name               label shown in the bar and menu
-#   base_url           Anthropic-compatible endpoint (omit for official API)
-#   token              API token (omit to fall back to claude login/OAuth)
-#   env.<KEY>          extra env written to ~/.claude/settings.json
-#   usage              optional account marker for usage display (zai)
+# Only base_url and token are required. Everything else is optional:
+#   name         label in the bar and menu     (default: the endpoint host)
+#   model        starting model id             (default: newest the endpoint reports)
+#   behaves_as   capability floor              (default: claude-sonnet-4-5)
+#   models_url   model-catalogue URL           (default: probed)
+#   usage        usage-account marker          (e.g. zai)
+#   icon         provider-mark override        (e.g. deepseek)
+#   env.<KEY>    extra env written to ~/.claude/settings.json
+#
+# A section with no base_url or token is your Claude OAuth login.
 
 [zai-plan]
-name = Z.AI coding plan
 base_url = https://api.z.ai/api/anthropic
 token = your-zai-token
 usage = zai
 
 [another-provider]
-name = Another provider
 base_url = https://provider.example/anthropic
 token = another-token
 
 [anthropic-login]
-name = Official Anthropic (claude login)
+name = Claude (OAuth)
 EOF
     chmod 600 "$PROFILES"
     echo "wrote example $PROFILES — edit with: skal-swap edit"
@@ -882,7 +910,7 @@ main() {
         load_profiles
         if [[ ${3:-} == "--model" ]]; then
             [[ -n ${4:-} ]] || die "usage: skal-swap use <id> --model <model-id>"
-            [[ -n ${P_NAME[$2]+x} ]] || die "no profile '$2' (see: skal-swap list)"
+            [[ -n ${PROFILE_SET[$2]:-} ]] || die "no profile '$2' (see: skal-swap list)"
             set_model_for "$2" "$4"
         fi
         apply_profile "$2"

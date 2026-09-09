@@ -245,19 +245,20 @@ Panel {
 
     Item {
       visible: root.iconMode === "Logo"
-      width: visible ? Math.round(Style.font.body * 1.3) : 0
+      width: visible ? Math.round(Style.font.body * 1.5) : 0
       height: width
 
       Image {
         id: logoProvider
         anchors.fill: parent
+        anchors.margins: 2
         source: Qt.resolvedUrl("assets/claude.svg")
         sourceSize: Qt.size(96, 96)
         fillMode: Image.PreserveAspectFit
       }
 
       MultiEffect {
-        anchors.fill: parent
+        anchors.fill: logoProvider
         source: logoProvider
         autoPaddingEnabled: false
         colorization: 1.0
@@ -423,20 +424,24 @@ Panel {
 
               Item {
                 id: providerMark
-                width: Math.round(Style.font.body * 1.15)
+                width: Style.space(22)
                 height: width
                 anchors.verticalCenter: parent.verticalCenter
 
+                // A couple of pixels of breathing room on every edge —
+                // marks that paint to the SVG edge (the Z.AI border)
+                // otherwise meet the effect's texture boundary.
                 Image {
                   id: providerProvider
                   anchors.fill: parent
+                  anchors.margins: 2
                   source: Qt.resolvedUrl("assets/providers/" + (row.prof.icon || "claude") + ".svg")
-                  sourceSize: Qt.size(48, 48)
+                  sourceSize: Qt.size(64, 64)
                   fillMode: Image.PreserveAspectFit
                 }
 
                 MultiEffect {
-                  anchors.fill: parent
+                  anchors.fill: providerProvider
                   source: providerProvider
                   autoPaddingEnabled: false
                   colorization: 1.0

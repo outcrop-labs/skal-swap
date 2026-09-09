@@ -157,6 +157,41 @@ wrong for that gateway, `Access to model denied` means the id exists but
 your plan tier does not include it. A `icon = deepseek` style override picks
 the row's provider mark when one plan serves several model families.
 
+### Known providers
+
+Any Anthropic-compatible endpoint works — the plugin is provider-agnostic.
+These get their brand mark automatically from the endpoint host (override
+with `icon =`); everyone else gets the neutral three-bar mark:
+
+| Provider | Endpoint host | Kind |
+| --- | --- | --- |
+| Anthropic | `api.anthropic.com` (or OAuth login) | coding plans |
+| Z.AI (GLM) | `api.z.ai`, `open.bigmodel.cn` | coding plans |
+| Alibaba / Qwen | `*.aliyuncs.com`, token-plan `*.maas.aliyuncs.com` | coding plans + PAYG |
+| Kimi (Moonshot) | `api.moonshot.ai` / `.cn` | coding plans |
+| MiniMax | `api.minimax.io`, `api.minimaxi.com` | coding plans |
+| Xiaomi MiMo | `api.xiaomimimo.com` | coding plans |
+| StepFun | `api.stepfun.ai` / `.com` | coding plans + PAYG |
+| xAI | `api.x.ai` | PAYG |
+| DeepSeek | `api.deepseek.com` / `.cn` | PAYG |
+| Mistral | `api.mistral.ai` | PAYG |
+| Groq | `api.groq.com` | PAYG |
+| Cerebras | `api.cerebras.ai` | PAYG |
+| Google Gemini | `generativelanguage.googleapis.com` | PAYG |
+| OpenAI | `api.openai.com` | PAYG |
+| OpenRouter | `openrouter.ai` | aggregator |
+| Kilo | `kilo.ai`, `api.kilo.ai` | aggregator |
+| Novita | `api.novita.ai` | aggregator |
+| GLama | `glama.ai` | aggregator |
+| opencode zen | `opencode.ai` | aggregator |
+| SiliconFlow | `api.siliconflow.com` / `.cn` | aggregator |
+| Hugging Face | `api.huggingface.co` | aggregator |
+| Ollama | `localhost:11434` | local |
+
+Model mappings are per-profile `env.*` keys; a good maintained reference
+for exact endpoint paths and current model ids is
+[cc-compatible-models](https://github.com/Alorse/cc-compatible-models).
+
 Bar widget settings (inline on the shell.json layout entry or via your bar's
 settings UI): `icon` (`Logo` / `Glyph` / `None`), `labelStyle` (`Name` /
 `Host` / `Icon`), `glyph` (Nerd Font glyph for `Glyph` mode and toasts).

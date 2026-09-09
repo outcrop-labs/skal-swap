@@ -134,25 +134,40 @@ host_of() {
 }
 
 # Provider mark for a profile (an asset in assets/providers/<name>.svg).
-# Explicit `icon =` key wins; otherwise the endpoint host decides.
+# Explicit `icon =` key wins; otherwise the endpoint host decides. Unknown
+# hosts get the neutral three-bar mark.
 icon_of() { # icon_of <profile-id>
     local id=$1
     [[ -n ${P_ICON[$id]:-} ]] && { printf '%s' "${P_ICON[$id]}" | tr -c 'a-z0-9-' '-'; return; }
     case $(host_of "${P_BASE[$id]:-}") in
-    api.z.ai | z.ai) echo zai ;;
+    # Anthropic-compatible coding plans
+    api.z.ai | z.ai | open.bigmodel.cn) echo zai ;;
     api.openai.com | openai.com) echo openai ;;
-    openrouter.ai | api.openrouter.ai) echo openrouter ;;
-    generativelanguage.googleapis.com | aiplatform.googleapis.com) echo googlegemini ;;
-    api.deepseek.com | deepseek.com) echo deepseek ;;
     api.moonshot.ai | api.moonshot.cn | kimi.com | api.kimi.com) echo kimi ;;
-    api.x.ai | x.ai) echo x ;;
     api.minimax.io | minimax.io | api.minimaxi.com) echo minimax ;;
-    *aliyuncs.com | *dashscope*) echo qwen ;;
+    api.xiaomimimo.com) echo xiaomi ;;
+    api.stepfun.ai | api.stepfun.com) echo stepfun ;;
+    api.x.ai | x.ai) echo x ;;
+    # Direct pay-as-you-go APIs
+    api.deepseek.com | deepseek.com | api.deepseek.cn) echo deepseek ;;
     api.mistral.ai | mistral.ai) echo mistralai ;;
-    api.together.xyz) echo huggingface ;;
+    api.groq.com | groq.com) echo groq ;;
+    api.cerebras.ai | cerebras.ai) echo cerebras ;;
+    generativelanguage.googleapis.com | aiplatform.googleapis.com) echo googlegemini ;;
+    # Aggregators
+    openrouter.ai | api.openrouter.ai) echo openrouter ;;
+    kilo.ai | api.kilo.ai) echo kilo ;;
+    api.novita.ai | novita.ai) echo novita ;;
+    glama.ai | api.glama.ai) echo glama ;;
+    opencode.ai | api.opencode.ai) echo opencode ;;
+    api.siliconflow.com | api.siliconflow.cn) echo siliconflow ;;
+    # Alibaba: DashScope pay-as-you-go and the regional token-plan gateways
+    *aliyuncs.com | *dashscope* | *maas.aliyuncs.com) echo qwen ;;
     huggingface.co | api.huggingface.co) echo huggingface ;;
-    localhost* | 127.0.0.1*) [[ ${P_BASE[$id]:-} == *:11434* ]] && echo ollama || echo claude ;;
-    *) echo claude ;;
+    # Local
+    localhost* | 127.0.0.1*) [[ ${P_BASE[$id]:-} == *:11434* ]] && echo ollama || echo generic ;;
+    api.anthropic.com) echo claude ;;
+    *) echo generic ;;
     esac
 }
 

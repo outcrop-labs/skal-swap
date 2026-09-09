@@ -22,10 +22,12 @@ So: this. Every key and endpoint is a profile. Switching is a click. The
 models come from the provider instead of from your memory. The usage bars
 tell you which plan you're closest to torching.
 
-It's also just weird, in a good way. Same Claude-y feel, different brains that reason through things in unique ways. Nothing else changed, so the differences show up
-pretty quickly: one of them one-shots a refactor you'd assumed needed Fable, another writes something you'd never ship with total confidence in a Bob Rossian happy-accidents fashion.
-After a week of that you stop asking which model is best and start keeping a
-few around for different jobs.
+It's also just weird, in a good way. Same Claude-y feel, different brains that
+reason through things in unique ways. Nothing else changed, so the differences
+show up pretty quickly: one of them one-shots a refactor you'd assumed needed
+Fable, another writes something you'd never ship with total confidence in a
+Bob Rossian happy-accidents fashion. After a week of that you stop asking
+which model is best and start keeping a few around for different jobs.
 
 The bar item shows the Claude logomark (tinted to your theme) and the active
 profile. Click for the picker, middle-click to bounce between your two

@@ -35,7 +35,9 @@ your two most-used profiles. Every switch announces itself with a toast.
   `ANTHROPIC_*` key first, then writes the profile's — no stale model
   mappings or endpoints left behind
 - `~/.claude/settings.json` is rewritten atomically and everything outside
-  `env.ANTHROPIC_*` is untouched (file mode tightened to 600)
+  `env.ANTHROPIC_*` is untouched (file mode tightened to 600); Claude Code's
+  cached model id (`clientDataCacheSlots` in `~/.claude.json`) is dropped so a
+  stale Anthropic id can't leak onto a third-party endpoint
 - Stays in sync no matter what changed the profile — menu, terminal CLI,
   keybinding, or a manual edit (file watchers + slow poll)
 - **Quota/usage across the board** — progress bars and percentages per
@@ -214,9 +216,16 @@ settings UI): `icon` (`Logo` / `Glyph` / `None`), `labelStyle` (`Name` /
 
 **What this writes, by design and only when you ask it to:** `skal-ccs use` /
 `swap` (from the menu, terminal, or a keybind) rewrite the managed
-`ANTHROPIC_*` keys inside the `env` object of `~/.claude/settings.json`.
-Nothing else in that file — and no other file — is modified. Running claude
-sessions keep the previous key until restarted; the toast reminds you.
+`ANTHROPIC_*` keys inside the `env` object of `~/.claude/settings.json`;
+nothing else in that file is modified. They also drop the
+`clientDataCacheSlots` key from `~/.claude.json` — Claude Code caches the
+*resolved* model id there per entrypoint, keyed without regard to
+`ANTHROPIC_BASE_URL`, so a slot filled under the OAuth profile otherwise
+survives the switch and sends a literal Anthropic model id (`claude-sonnet-5`)
+to your gateway, which rejects it with an invalid-parameter 400. It is a
+cache: Claude Code repopulates it on next start, and nothing else in that file
+is touched. Running claude sessions keep the previous key until restarted; the
+toast reminds you.
 
 ## CLI
 
@@ -236,6 +245,14 @@ Tokens are always masked to their first 8 characters in output.
 
 - **Switched but Claude Code still uses the old key** — already-running
   sessions read env at startup; restart them.
+- **`API Error: 400 … Invalid API parameter` right after switching to a
+  non-Anthropic profile** — Claude Code cached the resolved model id from your
+  previous profile and sent a literal Anthropic id (e.g. `claude-sonnet-5`) to
+  a gateway that has no such model. `skal-ccs use` clears that cache on every
+  switch; if you hit it on an older version, switch profiles again (or remove
+  `clientDataCacheSlots` from `~/.claude.json`) and start a fresh session. Note
+  it reproduces only in interactive sessions — `claude -p` reads a different
+  cache slot.
 - **Widget shows `…` or `custom`** — `…` means `skal-ccs status --json` failed
   (run it in a terminal to see why); `custom` means the active token matches
   no profile in profiles.conf.

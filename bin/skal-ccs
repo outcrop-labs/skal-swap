@@ -428,6 +428,17 @@ apply_profile() { # apply_profile <id>
                  | with_entries(. as $e | select(($del_keys | index($e.key)) == null))
                  + $add_pairs)'
     chmod 600 "$SETTINGS"
+
+    # Claude Code caches the *resolved* model id per entrypoint in
+    # ~/.claude.json (clientDataCacheSlots), keyed without regard to
+    # ANTHROPIC_BASE_URL. A slot filled under the OAuth profile hands the engine
+    # a literal Anthropic id (claude-sonnet-5), which a third-party gateway
+    # rejects with an invalid-parameter 400. Drop the cache so the slot alias
+    # re-resolves through this profile's ANTHROPIC_DEFAULT_*_MODEL mapping.
+    if [[ -f $CLAUDE_JSON ]]; then
+        rewrite "$CLAUDE_JSON" 'del(.clientDataCacheSlots)'
+    fi
+
     if is_oauth "$id"; then
         load_oauth "$id"
         write_oauth_state "$id"

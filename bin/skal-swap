@@ -146,7 +146,9 @@ load_profiles() {
     done < <(parse_profiles)
 }
 
-MODELS_DIR="$STATE_DIR/models"
+# Bump the version segment whenever the cached shape or ordering changes;
+# the new path simply misses, so stale caches never outlive their format.
+MODELS_DIR="$STATE_DIR/models/v2"
 MODELS_TTL="${CCS_MODELS_TTL:-86400}"
 BEHAVES_AS_DEFAULT="${CCS_BEHAVES_AS:-claude-sonnet-4-5}"
 

@@ -22,10 +22,8 @@ So: this. Every key and endpoint is a profile. Switching is a click. The
 models come from the provider instead of from your memory. The usage bars
 tell you which plan you're closest to torching.
 
-It's also just weird, in a good way. Same tools, same prompts, same loop,
-different model driving. Nothing else changed, so the differences show up
-fast: one of them one-shots a refactor you'd assumed needed the expensive
-option, another writes something you'd never ship with total confidence.
+It's also just weird, in a good way. Same Claude-y feel, different brains that reason through things in unique ways. Nothing else changed, so the differences show up
+pretty quickly: one of them one-shots a refactor you'd assumed needed Fable, another writes something you'd never ship with total confidence in a Bob Rossian happy-accidents fashion.
 After a week of that you stop asking which model is best and start keeping a
 few around for different jobs.
 

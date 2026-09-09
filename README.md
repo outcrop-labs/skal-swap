@@ -329,9 +329,11 @@ Tokens are always masked to their first 8 characters in output.
   endpoint, key and model — so a cheap plan can grind a long task while
   another provider handles interactive work.
 - **The Skalswap CLI**, a separate and entirely optional project, will power
-  those instances. This plugin does not depend on it and never will: when the
-  CLI is present the bar unlocks the extra functionality, and when it isn't
-  everything here works exactly as documented.
+  those instances. It ships the same `skal-swap` command as a superset of the
+  one bundled here, so installing it upgrades the command rather than adding a
+  second one to your PATH. This plugin does not depend on it and never will:
+  when the CLI is present the bar unlocks the extra functionality, and when it
+  isn't everything here works exactly as documented.
 - **A UI for adding providers**, so a new endpoint and key is a dialog rather
   than an edit to `profiles.conf`.
 

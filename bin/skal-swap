@@ -59,10 +59,11 @@ readonly -a MANAGED_BASE=(
   ANTHROPIC_CUSTOM_MODEL_OPTION
   ANTHROPIC_CUSTOM_MODEL_OPTION_NAME
   ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION
+  CLAUDE_CODE_MAX_CONTEXT_TOKENS
 )
 
 declare -A P_NAME=() P_BASE=() P_TOKEN=() P_USAGE=() P_ICON=() P_OAUTH=()
-declare -A P_MODEL=() P_MODELS_URL=() P_BEHAVES_AS=()
+declare -A P_MODEL=() P_MODELS_URL=() P_BEHAVES_AS=() P_CONTEXT=()
 declare -A PROFILE_SET=()
 declare -a PROFILE_IDS=()
 declare -a ENV_LINES=()
@@ -94,7 +95,7 @@ usage: skal-swap [command]
                   (default 300; 0 = always fetch)
 
 profiles : ~/.config/skal.swap/profiles.conf
-settings : ~/.claude/settings.json (env.ANTHROPIC_*, model, modelPicker)
+settings : ~/.claude/settings.json (env.ANTHROPIC_*, env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, model, modelPicker, autoCompactWindow)
 EOF
     exit "${1:-0}"
 }
@@ -135,6 +136,9 @@ load_profiles() {
             model) P_MODEL[$sec]=$val ;;
             models_url) P_MODELS_URL[$sec]=$val ;;
             behaves_as) P_BEHAVES_AS[$sec]=$val ;;
+            context)
+                [[ $val =~ ^[0-9]+$ ]] || echo "skal-swap: [$sec] context must be a whole number of tokens (got '$val')" >&2
+                P_CONTEXT[$sec]=$val ;;
             base_url) P_BASE[$sec]=$val ;;
             token) P_TOKEN[$sec]=$val ;;
             usage) P_USAGE[$sec]=$val ;;
@@ -339,6 +343,20 @@ set_model_for() { # set_model_for <profile-id> <model-id>
 
 PREV_MODEL="$STATE_DIR/prev-model"
 
+# context >= 1M gets [1m] appended to model ids: for an id Claude Code doesn't
+# know, its believed window (and with it the auto-compact window, which is
+# clamped to that) tops out at 200k otherwise. The suffix never reaches the
+# API — the client strips it and sends the 1m beta handling instead.
+context_1m() { # context_1m <profile-id> -> 0 when the profile declared >=1M
+    [[ ${P_CONTEXT[$1]:-} =~ ^[0-9]+$ && ${P_CONTEXT[$1]} -ge 1000000 ]]
+}
+
+context_suffix() { # context_suffix <profile-id> <model-id>
+    context_1m "$1" || { printf '%s' "$2"; return; }
+    [[ $2 == *"[1m]" ]] && { printf '%s' "$2"; return; }
+    printf '%s[1m]' "$2"
+}
+
 # The endpoint's catalogue as a modelPicker lineup. modelPicker replaces the
 # built-in list, so it is written only for endpoints that report models and
 # removed again when returning to the OAuth profile.
@@ -346,6 +364,9 @@ picker_json() { # picker_json <profile-id>
     local id=$1 tsv
     tsv=$(models_cached "$id")
     [[ -n $tsv ]] || { printf 'null'; return; }
+    if context_1m "$id"; then
+        tsv=$(printf '%s' "$tsv" | awk -F'\t' -v OFS='\t' '$1 !~ /\[1m\]$/ {$1 = $1 "[1m]"} {print}')
+    fi
     # Schema: an object with an "options" array of {model, label?,
     # description?, behavesAs?} rows — not a bare array.
     #
@@ -370,7 +391,7 @@ picker_json() { # picker_json <profile-id>
 
 apply_model_selection() { # apply_model_selection <profile-id>
     local id=$1 model picker cur
-    model=$(model_of "$id")
+    model=$(context_suffix "$id" "$(model_of "$id")")
     picker=$(picker_json "$id")
 
     if is_oauth "$id" || [[ -z ${P_BASE[$id]:-} ]]; then
@@ -623,6 +644,18 @@ apply_profile() { # apply_profile <id>
     [[ -n ${P_TOKEN[$id]:-} ]] && pairs+=("ANTHROPIC_AUTH_TOKEN"$'\t'"${P_TOKEN[$id]}")
     [[ -n ${P_BASE[$id]:-} ]] && pairs+=("ANTHROPIC_BASE_URL"$'\t'"${P_BASE[$id]}")
 
+    # Declaring the endpoint's real context window: for model ids it doesn't
+    # know, Claude Code only warns about the window it assumes — it never
+    # enforces it, so auto-compact never arms on third-party endpoints. The
+    # env var declares it, the autoCompactWindow setting enforces it (clamped
+    # to the model's believed window, which is why 1M endpoints also need the
+    # [1m] suffix from context_suffix/picker_json).
+    local acw=""
+    if ! is_oauth "$id" && [[ -n ${P_CONTEXT[$id]:-} ]]; then
+        pairs+=("CLAUDE_CODE_MAX_CONTEXT_TOKENS"$'\t'"${P_CONTEXT[$id]}")
+        acw=${P_CONTEXT[$id]}
+    fi
+
     # Model selection is applied separately, in apply_model_selection: it
     # rides settings.json's "model" key rather than ANTHROPIC_MODEL, because
     # the env var outranks the key and would override anything picked with
@@ -650,10 +683,11 @@ apply_profile() { # apply_profile <id>
         | jq -R -s 'split("\n") | map(select(length > 0))')
 
     rewrite "$SETTINGS" \
-        --argjson del_keys "$managed_json" --argjson add_pairs "$pairs_json" \
+        --argjson del_keys "$managed_json" --argjson add_pairs "$pairs_json" --argjson acw "${acw:-null}" \
         '.env = ((.env // {})
                  | with_entries(. as $e | select(($del_keys | index($e.key)) == null))
-                 + $add_pairs)'
+                 + $add_pairs)
+          | if $acw == null then del(.autoCompactWindow) else .autoCompactWindow = $acw end'
     apply_model_selection "$id"
     chmod 600 "$SETTINGS"
 
@@ -825,6 +859,7 @@ cmd_init() {
 #   name         label in the bar and menu     (default: the endpoint host)
 #   model        starting model id             (default: newest the endpoint reports)
 #   behaves_as   capability floor              (default: claude-sonnet-4-5)
+#   context      endpoint context window       (tokens, e.g. 1000000 — arms auto-compact)
 #   models_url   model-catalogue URL           (default: probed)
 #   usage        usage-account marker          (e.g. zai)
 #   icon         provider-mark override        (e.g. deepseek)
@@ -835,6 +870,7 @@ cmd_init() {
 [zai-plan]
 base_url = https://api.z.ai/api/anthropic
 token = your-zai-token
+context = 1000000
 usage = zai
 
 [another-provider]

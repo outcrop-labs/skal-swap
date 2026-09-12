@@ -161,6 +161,7 @@ old one back when you return to the OAuth profile.
 | `model` | optional starting model; defaults to the newest chat model the endpoint reports |
 | `models_url` | optional override for the model-catalogue URL, if the probe can't find it |
 | `behaves_as` | optional capability floor — id of a model your Claude Code build knows, whose prompt profile, capability and effort defaults get used. Defaults to `claude-sonnet-4-5` for any profile with a `base_url` |
+| `context` | optional context window of the endpoint's models, in tokens (e.g. `1000000`). Declares it to Claude Code so auto-compact actually fires; see below |
 | `env.<NAME>` | extra env written with the profile |
 | `usage` | optional per-key usage marker (`zai`, `openrouter`, `deepseek`, `kimi`, `kilo`, `novita`, `moonshot`, `grok`, `minimax`, `opencode-go`) |
 | `icon` | optional provider-mark override (`zai`, `openai`, `qwen`, …) |
@@ -205,6 +206,19 @@ yourself if your endpoint keeps up with Anthropic and you want the newer
 behaviour, or `CCS_BEHAVES_AS` to move the default. The picker also sets
 `replaceBuiltInOptions`, because listing Opus on a GLM endpoint helps
 nobody.
+
+Then there's the context window, which is its own adventure. Give Claude Code
+an id it's never heard of and it quietly assumes 200k — and then only *warns*
+about that number instead of enforcing it, which means auto-compact never
+arms and you get to run `/compact` by hand like an animal. `context` fixes
+that: the number is declared via `CLAUDE_CODE_MAX_CONTEXT_TOKENS` and
+`autoCompactWindow`, and compaction happens near it like Claude intended.
+One quirk to know about: the compact window is clamped to the *believed*
+window, which tops out at 200k unless the model id carries a `[1m]` tag. So
+for a 1M endpoint (Z.ai's current GLM generation, say) set `context = 1000000`
+and the tag gets appended to the pin and every picker row for you — the API
+never sees it. Only set `context` when the endpoint's models share a window;
+a profile serving both a 128k veteran and a 1M flagship wants two profiles.
 
 ### Multiple Claude OAuth logins
 

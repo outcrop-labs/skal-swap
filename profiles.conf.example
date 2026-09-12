@@ -5,6 +5,7 @@
 #   name         label in the bar and menu     (default: the endpoint host)
 #   model        starting model id             (default: newest the endpoint reports)
 #   behaves_as   capability floor              (default: claude-sonnet-4-5)
+#   context      endpoint context window       (tokens, e.g. 1000000 — arms auto-compact)
 #   models_url   model-catalogue URL           (default: probed)
 #   usage        usage-account marker          (e.g. zai)
 #   icon         provider-mark override        (e.g. deepseek)
@@ -15,6 +16,7 @@
 [zai-plan]
 base_url = https://api.z.ai/api/anthropic
 token = your-zai-token
+context = 1000000
 usage = zai
 
 [another-provider]

@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.2.0
+
+### Per-profile context length, so auto-compact works
+
+Claude Code never auto-compacted on provider profiles: hand it a model id it
+doesn't know and it assumes a 200k window, then only warns about that number
+instead of enforcing it — so the context fills and you get to compact by hand.
+
+New optional `context` key in `profiles.conf` (tokens, e.g. `1000000`):
+
+- Written through as `CLAUDE_CODE_MAX_CONTEXT_TOKENS` and the
+  `autoCompactWindow` setting, which is what actually arms auto-compact.
+- At 1M or more, model ids (the pin and every picker row) also get Claude
+  Code's `[1m]` tag appended — without it the compact window is clamped to
+  the assumed 200k. The tag is client-side only; the API never sees it.
+- Managed like the rest of the env: switching profiles (including back to
+  OAuth) removes both keys when the target profile declares no `context`.
+
 ## 1.1.0
 
 Renamed to **Skal Swap**. The plugin id is now `skal.swap` and the CLI is

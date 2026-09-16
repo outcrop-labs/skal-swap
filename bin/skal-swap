@@ -158,6 +158,12 @@ load_profiles() {
 # the new path simply misses, so stale caches never outlive their format.
 MODELS_DIR="$STATE_DIR/models/v3"
 MODELS_TTL="${CCS_MODELS_TTL:-86400}"
+# A catalogue response is held in memory before jq sees it, so it gets a hard
+# ceiling as well as a timeout: a provider that misbehaves (or is compromised)
+# must not be able to stream an endless body into this process. 4 MiB is about
+# six times the largest real catalogue going (OpenRouter's, ~730 KB); anything
+# past it fails closed and the next candidate URL is tried.
+MODELS_MAX_BYTES="${CCS_MODELS_MAX_BYTES:-4194304}"
 BEHAVES_AS_DEFAULT="${CCS_BEHAVES_AS:-claude-sonnet-4-5}"
 
 # Ask an endpoint what it serves. Anthropic-format gateways expose
@@ -239,8 +245,16 @@ fetch_models() { # fetch_models <profile-id> -> id \t display_name \t max_output
     fi
     while read -r url; do
         [[ -n $url ]] || continue
-        resp=$(curl -sS -m 10 "$url" -H "anthropic-version: 2023-06-01" \
-            "${auth[@]}" 2>/dev/null) || continue
+        # --max-filesize aborts the transfer (non-zero exit, so `continue`
+        # takes us to the next URL). It leans on Content-Length, which a
+        # chunked response doesn't carry, so the byte count is re-checked here
+        # for the curl builds that treat the flag as advisory.
+        resp=$(curl -sS -m 10 --max-filesize "$MODELS_MAX_BYTES" "$url" \
+            -H "anthropic-version: 2023-06-01" "${auth[@]}" 2>/dev/null) || continue
+        if [[ $(printf '%s' "$resp" | wc -c) -gt $MODELS_MAX_BYTES ]]; then
+            echo "skal-swap: [$id] $url returned more than $MODELS_MAX_BYTES bytes — ignored" >&2
+            continue
+        fi
         out=$(printf '%s' "$resp" | jq -r "$MODELS_JQ" 2>/dev/null) || continue
         if [[ -n $out ]]; then
             printf '%s\n' "$out"

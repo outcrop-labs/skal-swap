@@ -246,6 +246,11 @@ no limits whatsoever, and there the 32000 default stands until you say
 otherwise. That is what `max_output` is for: it always wins, catalogue or no
 catalogue.
 
+Catalogue responses are capped at 4 MiB (`CCS_MODELS_MAX_BYTES` if you ever
+need to move it) and timed out at 10 seconds. Over either limit the endpoint
+is skipped rather than trusted, and the profile switches on whatever `model`
+it has configured.
+
 ### Multiple Claude OAuth logins
 
 Claude Code holds one OAuth session at a time. Skal Swap will juggle several

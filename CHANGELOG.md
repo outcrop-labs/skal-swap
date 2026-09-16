@@ -28,6 +28,18 @@ off the endpoint rather than typed in:
 - The model cache gained a column, so it is versioned `v3` and refetches
   once.
 
+### Catalogue fetches are size-capped
+
+Model-catalogue responses had a 10 second timeout but no size limit, and the
+whole body was held in memory on its way to `jq`, so a provider that
+misbehaved or was compromised could stream until something gave. They now
+carry a hard 4 MiB ceiling (`curl --max-filesize`, re-checked against the
+received byte count for the curl builds that treat the flag as advisory on a
+chunked response). Over the ceiling the transfer is aborted and the endpoint
+is skipped, which is the same path as any other failed probe: the profile
+still switches, on its configured model. The largest real catalogue going is
+OpenRouter's at roughly 730 KB. Reported by @HANCORE-linux, with thanks.
+
 ## 1.2.0
 
 ### Per-profile context length, so auto-compact works

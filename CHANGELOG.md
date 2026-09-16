@@ -40,6 +40,17 @@ is skipped, which is the same path as any other failed probe: the profile
 still switches, on its configured model. The largest real catalogue going is
 OpenRouter's at roughly 730 KB. Reported by @HANCORE-linux, with thanks.
 
+### Catalogue auth headers stay out of argv
+
+Authenticated catalogue fetches put the profile API token and the Claude
+OAuth access token on curl's command line (`-H "authorization: Bearer …"` /
+`-H "x-api-key: …"`), so the secret was readable from `/proc/<pid>/cmdline`
+for the whole transfer. Those headers now go through a private descriptor as
+`curl --config`; the 10 second deadline, 4 MiB size cap, HTTPS validation,
+and fail-closed skip are unchanged. `tests/fetch_models_cmdline.sh` samples
+the live child command line and fails if either token appears. Reported by
+@HANCORE-linux, with thanks.
+
 ## 1.2.0
 
 ### Per-profile context length, so auto-compact works

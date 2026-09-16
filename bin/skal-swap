@@ -230,18 +230,27 @@ oauth_token_of() { # oauth_token_of <profile-id> -> token or empty
     printf '%s' "$tok"
 }
 
+curl_config_header() { # curl_config_header <name> <value> -> one --config line
+    local name=$1 value=$2
+    value=${value//\\/\\\\}
+    value=${value//\"/\\\"}
+    printf 'header = "%s: %s"\n' "$name" "$value"
+}
+
 fetch_models() { # fetch_models <profile-id> -> id \t display_name \t max_output
-    local id=$1 tok=${P_TOKEN[$id]:-} url resp out
-    local -a auth=()
+    local id=$1 tok=${P_TOKEN[$id]:-} url resp out config
+    config=$(curl_config_header "anthropic-version" "2023-06-01")$'\n'
     if [[ -z ${P_BASE[$id]:-} ]]; then
         # Anthropic's catalogue behind an OAuth session: bearer only, and it
         # wants the oauth beta header. An api-key header alongside it is
         # rejected outright.
         tok=$(oauth_token_of "$id")
         [[ -n $tok ]] || return 1
-        auth=(-H "authorization: Bearer $tok" -H "anthropic-beta: oauth-2025-04-20")
+        config+=$(curl_config_header "anthropic-beta" "oauth-2025-04-20")$'\n'
+        config+=$(curl_config_header "authorization" "Bearer $tok")$'\n'
     elif [[ -n $tok ]]; then
-        auth=(-H "authorization: Bearer $tok" -H "x-api-key: $tok")
+        config+=$(curl_config_header "authorization" "Bearer $tok")$'\n'
+        config+=$(curl_config_header "x-api-key" "$tok")$'\n'
     fi
     while read -r url; do
         [[ -n $url ]] || continue
@@ -249,8 +258,12 @@ fetch_models() { # fetch_models <profile-id> -> id \t display_name \t max_output
         # takes us to the next URL). It leans on Content-Length, which a
         # chunked response doesn't carry, so the byte count is re-checked here
         # for the curl builds that treat the flag as advisory.
-        resp=$(curl -sS -m 10 --max-filesize "$MODELS_MAX_BYTES" "$url" \
-            -H "anthropic-version: 2023-06-01" "${auth[@]}" 2>/dev/null) || continue
+        # Auth headers ride a private fd via --config, not -H on argv: while
+        # curl runs, /proc/<pid>/cmdline would otherwise hold the bearer and
+        # api-key. Deadline, size cap, TLS verification, and fail-closed
+        # behaviour are unchanged.
+        resp=$(curl -sS -m 10 --max-filesize "$MODELS_MAX_BYTES" \
+            --config /dev/fd/3 "$url" 3<<<"$config" 2>/dev/null) || continue
         if [[ $(printf '%s' "$resp" | wc -c) -gt $MODELS_MAX_BYTES ]]; then
             echo "skal-swap: [$id] $url returned more than $MODELS_MAX_BYTES bytes — ignored" >&2
             continue

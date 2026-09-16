@@ -6,6 +6,7 @@
 #   model        starting model id             (default: newest the endpoint reports)
 #   behaves_as   capability floor              (default: claude-sonnet-4-5)
 #   context      endpoint context window       (tokens, e.g. 1000000 — arms auto-compact)
+#   max_output   longest single response       (tokens — override; normally read off the endpoint)
 #   models_url   model-catalogue URL           (default: probed)
 #   usage        usage-account marker          (e.g. zai)
 #   icon         provider-mark override        (e.g. deepseek)

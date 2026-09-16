@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.3.0
+
+### Per-profile output length, so long answers stop getting truncated
+
+Claude Code caps a single response at 32000 tokens and then fails it outright
+with `API Error: Claude's response exceeded the 32000 output token maximum`,
+which is a rotten way to find out halfway through a long file.
+
+The real ceiling now gets declared as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, read
+off the endpoint rather than typed in:
+
+- The model catalogue already behind the picker often reports the cap
+  (`max_tokens` on Anthropic, `top_provider.max_completion_tokens` on
+  OpenRouter, `max_output_tokens` elsewhere), and whichever model the profile
+  is pinned to decides the number.
+- Covers the OAuth profile too: its catalogue is Anthropic's, read with the
+  live login, and an alias pin like `opus` resolves to the newest Opus listed.
+- A bare `max_tokens` counts only alongside a separate input/context field,
+  and is dropped when it equals that window, because plenty of OpenAI-shaped
+  listings reuse the name for the context length.
+- New optional `max_output` key in `profiles.conf` overrides all of it, and is
+  the only way to raise the cap on the many endpoints (Z.ai and Alibaba's
+  token-plan gateway included) that report no limits at all.
+- Managed like the rest of the env: switching to a profile with no cap to
+  declare removes the key and restores Claude Code's default.
+- The model cache gained a column, so it is versioned `v3` and refetches
+  once.
+
 ## 1.2.0
 
 ### Per-profile context length, so auto-compact works

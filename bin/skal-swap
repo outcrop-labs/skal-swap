@@ -60,10 +60,11 @@ readonly -a MANAGED_BASE=(
   ANTHROPIC_CUSTOM_MODEL_OPTION_NAME
   ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION
   CLAUDE_CODE_MAX_CONTEXT_TOKENS
+  CLAUDE_CODE_MAX_OUTPUT_TOKENS
 )
 
 declare -A P_NAME=() P_BASE=() P_TOKEN=() P_USAGE=() P_ICON=() P_OAUTH=()
-declare -A P_MODEL=() P_MODELS_URL=() P_BEHAVES_AS=() P_CONTEXT=()
+declare -A P_MODEL=() P_MODELS_URL=() P_BEHAVES_AS=() P_CONTEXT=() P_MAX_OUTPUT=()
 declare -A PROFILE_SET=()
 declare -a PROFILE_IDS=()
 declare -a ENV_LINES=()
@@ -95,7 +96,7 @@ usage: skal-swap [command]
                   (default 300; 0 = always fetch)
 
 profiles : ~/.config/skal.swap/profiles.conf
-settings : ~/.claude/settings.json (env.ANTHROPIC_*, env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, model, modelPicker, autoCompactWindow)
+settings : ~/.claude/settings.json (env.ANTHROPIC_*, env.CLAUDE_CODE_MAX_{CONTEXT,OUTPUT}_TOKENS, model, modelPicker, autoCompactWindow)
 EOF
     exit "${1:-0}"
 }
@@ -139,6 +140,9 @@ load_profiles() {
             context)
                 [[ $val =~ ^[0-9]+$ ]] || echo "skal-swap: [$sec] context must be a whole number of tokens (got '$val')" >&2
                 P_CONTEXT[$sec]=$val ;;
+            max_output)
+                [[ $val =~ ^[0-9]+$ ]] || echo "skal-swap: [$sec] max_output must be a whole number of tokens (got '$val')" >&2
+                P_MAX_OUTPUT[$sec]=$val ;;
             base_url) P_BASE[$sec]=$val ;;
             token) P_TOKEN[$sec]=$val ;;
             usage) P_USAGE[$sec]=$val ;;
@@ -152,7 +156,7 @@ load_profiles() {
 
 # Bump the version segment whenever the cached shape or ordering changes;
 # the new path simply misses, so stale caches never outlive their format.
-MODELS_DIR="$STATE_DIR/models/v2"
+MODELS_DIR="$STATE_DIR/models/v3"
 MODELS_TTL="${CCS_MODELS_TTL:-86400}"
 BEHAVES_AS_DEFAULT="${CCS_BEHAVES_AS:-claude-sonnet-4-5}"
 
@@ -164,7 +168,9 @@ BEHAVES_AS_DEFAULT="${CCS_BEHAVES_AS:-claude-sonnet-4-5}"
 model_urls() { # model_urls <profile-id> -> candidate listing URLs, best first
     local id=$1 base=${P_BASE[$id]:-} origin trimmed
     [[ -n ${P_MODELS_URL[$id]:-} ]] && { printf '%s\n' "${P_MODELS_URL[$id]}"; return; }
-    [[ -n $base ]] || return 0
+    # No base_url means Claude Code's own OAuth login, whose endpoint is
+    # Anthropic's; its catalogue is what reports those models' output caps.
+    [[ -n $base ]] || { printf '%s\n' "$ANTHROPIC_MODELS_URL"; return 0; }
     base=${base%/}
     origin=$(printf '%s' "$base" | sed -E 's#^(https?://[^/]+).*#\1#')
     trimmed=${base%/*}                      # drop the dialect segment (…/apps/anthropic -> …/apps)
@@ -178,24 +184,64 @@ model_urls() { # model_urls <profile-id> -> candidate listing URLs, best first
         | awk '!seen[$0]++'
 }
 
-fetch_models() { # fetch_models <profile-id> -> id \t display_name
+# Deducing the output cap from the catalogue: Anthropic's Models API reports
+# it as max_tokens (alongside max_input_tokens for the window), OpenRouter as
+# top_provider.max_completion_tokens, others as max_output_tokens. Plenty of
+# OpenAI-shaped listings reuse "max_tokens" for the *context* length, so a bare
+# max_tokens only counts when a separate input/context field is there to tell
+# the two apart, and a figure equal to that window is dropped as the same
+# mislabelling. Anything unrecognised leaves the column empty and Claude Code's
+# own default stands.
+readonly MODELS_JQ='
+    def outcap:
+      . as $m
+      | ($m.max_input_tokens // $m.context_length // $m.context_window // null) as $in
+      | (try ($m.top_provider | if type == "object" then .max_completion_tokens else null end)
+         catch null) as $tp
+      | ($m.max_output_tokens // $tp // $m.max_completion_tokens
+         // (if $in != null then $m.max_tokens else null end)) as $out
+      | if ($out | type) == "number" and $out > 0 and $out != $in then $out else null end;
+    .data // [] | map(select(.id))
+    | map(select(.id | ascii_downcase
+          | test("audio|image|video|tts|asr|realtime|embed|rerank|ocr|speech|voice|whisper|diffusion") | not))
+    | map(. + {_c: ((.created_at // .created // "") | tostring),
+               _o: (try outcap catch null),
+               _full: (if (.id | ascii_downcase
+                       | test("flash|air|mini|lite|turbo|small|nano"))
+                       then 0 else 1 end)})
+    | sort_by([._c, ._full]) | reverse
+    | .[] | [.id, (.display_name // .id), (._o // "" | tostring)] | @tsv'
+
+ANTHROPIC_MODELS_URL="${CCS_ANTHROPIC_MODELS_URL:-https://api.anthropic.com/v1/models?limit=1000}"
+
+# Access token for a profile that rides Claude Code's OAuth login: the
+# profile's own store when it has one, else whatever session is live.
+oauth_token_of() { # oauth_token_of <profile-id> -> token or empty
+    local store tok=""
+    store=$(store_path "$1")
+    [[ -f $store ]] && tok=$(jq -r '.credentials.accessToken // empty' "$store" 2>/dev/null || true)
+    [[ -n $tok ]] || tok=$(jq -r '.claudeAiOauth.accessToken // empty' "$CREDS" 2>/dev/null || true)
+    printf '%s' "$tok"
+}
+
+fetch_models() { # fetch_models <profile-id> -> id \t display_name \t max_output
     local id=$1 tok=${P_TOKEN[$id]:-} url resp out
     local -a auth=()
-    [[ -n $tok ]] && auth=(-H "authorization: Bearer $tok" -H "x-api-key: $tok")
+    if [[ -z ${P_BASE[$id]:-} ]]; then
+        # Anthropic's catalogue behind an OAuth session: bearer only, and it
+        # wants the oauth beta header. An api-key header alongside it is
+        # rejected outright.
+        tok=$(oauth_token_of "$id")
+        [[ -n $tok ]] || return 1
+        auth=(-H "authorization: Bearer $tok" -H "anthropic-beta: oauth-2025-04-20")
+    elif [[ -n $tok ]]; then
+        auth=(-H "authorization: Bearer $tok" -H "x-api-key: $tok")
+    fi
     while read -r url; do
         [[ -n $url ]] || continue
         resp=$(curl -sS -m 10 "$url" -H "anthropic-version: 2023-06-01" \
             "${auth[@]}" 2>/dev/null) || continue
-        out=$(printf '%s' "$resp" \
-            | jq -r '.data // [] | map(select(.id))
-                     | map(select(.id | ascii_downcase
-                           | test("audio|image|video|tts|asr|realtime|embed|rerank|ocr|speech|voice|whisper|diffusion") | not))
-                     | map(. + {_c: ((.created_at // .created // "") | tostring),
-                                _full: (if (.id | ascii_downcase
-                                        | test("flash|air|mini|lite|turbo|small|nano"))
-                                        then 0 else 1 end)})
-                     | sort_by([._c, ._full]) | reverse
-                     | .[] | [.id, (.display_name // .id)] | @tsv' 2>/dev/null) || continue
+        out=$(printf '%s' "$resp" | jq -r "$MODELS_JQ" 2>/dev/null) || continue
         if [[ -n $out ]]; then
             printf '%s\n' "$out"
             return 0
@@ -234,22 +280,24 @@ cmd_models() {
     [[ -n ${PROFILE_SET[$id]:-} ]] || die "no profile '$id' (see: skal-swap list)"
     local tsv chosen
     tsv=$(models_cached "$id" "$refresh")
-    chosen=$(model_of "$id")
+    chosen=$(effective_model_of "$id")
     if [[ $json == 1 ]]; then
         printf '%s' "$tsv" | jq -R -s --arg cur "$chosen" --arg pid "$id" '
             split("\n") | map(select(length > 0)) | map(split("\t"))
             | {profile: $pid, current: (if $cur == "" then null else $cur end),
-               models: map({id: .[0], name: .[1], active: (.[0] == $cur)})}'
+               models: map({id: .[0], name: .[1], active: (.[0] == $cur),
+                            max_output: (if (.[2] // "") == "" then null else (.[2] | tonumber) end)})}'
         return
     fi
     if [[ -z $tsv ]]; then
         echo "$id: endpoint serves no model list${chosen:+ — using $chosen from profiles.conf}"
         return
     fi
-    local mid mname
-    while IFS=$'\t' read -r mid mname; do
+    local mid mname mout
+    while IFS=$'\t' read -r mid mname mout; do
         [[ -n $mid ]] || continue
-        printf '%s %-28s %s\n' "$([[ $mid == "$chosen" ]] && echo '*' || echo ' ')" "$mid" "$mname"
+        printf '%s %-28s %-28s %s\n' "$([[ $mid == "$chosen" ]] && echo '*' || echo ' ')" \
+            "$mid" "$mname" "${mout:+max out ${mout}}"
     done <<<"$tsv"
 }
 
@@ -334,6 +382,53 @@ model_of() { # model_of <profile-id>
     [[ -n ${P_MODEL[$id]:-} ]] && { printf '%s' "${P_MODEL[$id]}"; return; }
     # Nothing configured: take the newest model the endpoint reports.
     models_cached "$id" 2>/dev/null | head -1 | cut -f1
+}
+
+# On the OAuth profile the pin is Claude Code's own rather than one skal-swap
+# wrote, so it is often an alias (`opus`) instead of a model id. Resolve an
+# alias to the newest id of that family the catalogue lists; anything else is
+# taken literally.
+resolve_pin() { # resolve_pin <profile-id> <pin> -> catalogue id or empty
+    local id=$1 pin=$2 fam
+    case $pin in
+        "") return 0 ;;
+        opus | opusplan) fam=opus ;;
+        sonnet) fam=sonnet ;;
+        haiku) fam=haiku ;;
+        *) printf '%s' "$pin"; return 0 ;;
+    esac
+    models_cached "$id" 2>/dev/null \
+        | awk -F'\t' -v f="$fam" 'index(tolower($1), f) { print $1; exit }'
+}
+
+# The pin apply_model_selection is about to restore for an OAuth profile: the
+# one saved on the way out, else whatever is in settings now.
+oauth_pin() {
+    local prev=""
+    [[ -r $PREV_MODEL ]] && prev=$(<"$PREV_MODEL")
+    [[ -n $prev ]] || prev=$(jq -r '.model // empty' "$SETTINGS" 2>/dev/null || true)
+    printf '%s' "$prev"
+}
+
+# The id that will actually run: skal-swap's own pin on a provider profile,
+# Claude Code's (possibly aliased) one on the OAuth profile.
+effective_model_of() { # effective_model_of <profile-id> -> model id or empty
+    local id=$1
+    [[ -n ${P_BASE[$id]:-} ]] && { model_of "$id"; return; }
+    resolve_pin "$id" "$(oauth_pin)"
+}
+
+# Output cap for the model this profile will actually run: an explicit
+# max_output in profiles.conf wins, otherwise whatever the endpoint's own
+# catalogue reported for that id. Empty means "say nothing" and let Claude
+# Code's 32000 default stand.
+max_output_of() { # max_output_of <profile-id> -> tokens or empty
+    local id=$1 model
+    [[ -n ${P_MAX_OUTPUT[$id]:-} ]] && { printf '%s' "${P_MAX_OUTPUT[$id]}"; return; }
+    model=$(effective_model_of "$id") || return 0
+    [[ -n $model ]] || return 0
+    models_cached "$id" 2>/dev/null \
+        | awk -F'\t' -v m="$model" '$1 == m && $3 ~ /^[0-9]+$/ { print $3; exit }'
 }
 
 set_model_for() { # set_model_for <profile-id> <model-id>
@@ -656,6 +751,15 @@ apply_profile() { # apply_profile <id>
         acw=${P_CONTEXT[$id]}
     fi
 
+    # Claude Code caps a response at 32000 output tokens unless told otherwise,
+    # and hands back "response exceeded the 32000 output token maximum" when a
+    # model would have written more. max_output_of reads the real cap off the
+    # endpoint's catalogue (or the profile's own max_output), including for
+    # OAuth profiles, where that 32000 is Claude Code's own default rather than
+    # anything the endpoint asked for. Empty leaves the default in charge.
+    local maxout; maxout=$(max_output_of "$id" || true)
+    [[ -n $maxout ]] && pairs+=("CLAUDE_CODE_MAX_OUTPUT_TOKENS"$'\t'"$maxout")
+
     # Model selection is applied separately, in apply_model_selection: it
     # rides settings.json's "model" key rather than ANTHROPIC_MODEL, because
     # the env var outranks the key and would override anything picked with
@@ -860,6 +964,7 @@ cmd_init() {
 #   model        starting model id             (default: newest the endpoint reports)
 #   behaves_as   capability floor              (default: claude-sonnet-4-5)
 #   context      endpoint context window       (tokens, e.g. 1000000 — arms auto-compact)
+#   max_output   longest single response       (tokens — override; normally read off the endpoint)
 #   models_url   model-catalogue URL           (default: probed)
 #   usage        usage-account marker          (e.g. zai)
 #   icon         provider-mark override        (e.g. deepseek)

@@ -162,6 +162,7 @@ old one back when you return to the OAuth profile.
 | `models_url` | optional override for the model-catalogue URL, if the probe can't find it |
 | `behaves_as` | optional capability floor — id of a model your Claude Code build knows, whose prompt profile, capability and effort defaults get used. Defaults to `claude-sonnet-4-5` for any profile with a `base_url` |
 | `context` | optional context window of the endpoint's models, in tokens (e.g. `1000000`). Declares it to Claude Code so auto-compact actually fires; see below |
+| `max_output` | optional override for the longest single response, in tokens. Read off the endpoint's catalogue when it reports one, so set this only when the catalogue is silent or wrong; see below |
 | `env.<NAME>` | extra env written with the profile |
 | `usage` | optional per-key usage marker (`zai`, `openrouter`, `deepseek`, `kimi`, `kilo`, `novita`, `moonshot`, `grok`, `minimax`, `opencode-go`) |
 | `icon` | optional provider-mark override (`zai`, `openai`, `qwen`, …) |
@@ -219,6 +220,31 @@ for a 1M endpoint (Z.ai's current GLM generation, say) set `context = 1000000`
 and the tag gets appended to the pin and every picker row for you — the API
 never sees it. Only set `context` when the endpoint's models share a window;
 a profile serving both a 128k veteran and a 1M flagship wants two profiles.
+
+The other end of the same problem is the *output* cap. Claude Code will only
+let a single response run to 32000 tokens, and when a model wants to write
+more you get `API Error: Claude's response exceeded the 32000 output token
+maximum` and a half-finished file. Plenty of models go a lot further, so the
+real ceiling gets declared as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`.
+
+Mostly you don't have to look the number up. The same catalogue that fills the
+model picker often reports it, and whichever model the profile is pinned to
+decides the number, so pinning a smaller sibling lowers it again on the next
+switch. Anthropic's catalogue calls it `max_tokens` (next to
+`max_input_tokens` for the window), OpenRouter calls it
+`top_provider.max_completion_tokens`, others call it `max_output_tokens`.
+This covers the OAuth profile too, where the pin is Claude Code's own and
+usually an alias: `opus` resolves to the newest Opus the catalogue lists, and
+that model's cap is the one written.
+
+Two things to know. First, a fair few OpenAI-shaped listings reuse
+`max_tokens` for the *context* length, so a bare `max_tokens` is only believed
+when a separate input or context field is there to tell the two apart, and a
+figure equal to that window is thrown away as the same mislabelling. Second,
+plenty of endpoints (Z.ai and Alibaba's token-plan gateway among them) report
+no limits whatsoever, and there the 32000 default stands until you say
+otherwise. That is what `max_output` is for: it always wins, catalogue or no
+catalogue.
 
 ### Multiple Claude OAuth logins
 

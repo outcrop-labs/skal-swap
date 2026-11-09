@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "id": "skal.swap",
   "name": "Skål Swap",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "author": "Outcrop Labs",
   "license": "MIT",
   "homepage": "https://github.com/outcrop-labs/skal-swap",
-  "description": "Swap the provider and model behind Claude Code from your bar. Keys, endpoints, and whatever models each provider actually serves, with optional usage bars.",
+  "description": "Swap the provider, model and Claude plan behind Claude Code from your bar, or launch several side by side, on this machine and your other ones. Keys, endpoints, Claude logins, and whatever models each provider actually serves, with usage bars.",
   "kinds": [
     "bar-widget"
   ],

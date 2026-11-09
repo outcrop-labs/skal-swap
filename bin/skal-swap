@@ -44,6 +44,12 @@ STATE_DIR="${CCS_STATE:-$HOME/.local/state/skal.swap}"
 CRED_DIR="${CCS_CRED_DIR:-$HOME/.config/skal.swap/credentials}"
 OAUTH_STATE="$STATE_DIR/active-oauth"
 GLM_KEYS="${GLM_KEYS:-$HOME/.config/glm-keys.env}"
+# One Claude Code config dir per profile, for `run` and for logins that are
+# not the machine's current one. See "Claude logins" below.
+HOMES_DIR="${CCS_HOMES:-$HOME/.local/share/skal.swap/homes}"
+CLAUDE_DIR="${CCS_CLAUDE_DIR:-$(dirname "$SETTINGS")}"
+HOSTS_FILE="${CCS_HOSTS:-$HOME/.config/skal.swap/hosts.conf}"
+OAUTH_USAGE_URL="${CCS_OAUTH_USAGE_URL:-https://api.anthropic.com/api/oauth/usage}"
 
 # Env keys this tool owns. Cleared on every switch, then re-set from the
 # target profile (plus any env.* key any profile sets).
@@ -82,20 +88,49 @@ usage: skal-swap [command]
   use <id>        switch Claude Code to a profile
                   [--model <model-id>] also pick the model, remembered per
                   profile and written as settings.json's "model"
+  run <id> [-- claude args]
+                  launch claude on a profile without switching the machine:
+                  each profile gets its own config dir, so several Claude
+                  plans (and providers) can run side by side
+                  [-y|--skip-permissions] adds --dangerously-skip-permissions
+  login [<id>]    log a Claude subscription into a profile [--name N]
+                  [--email E]; creates the profile when it doesn't exist.
+                  Every machine logs in on its own (a refresh token shared
+                  between machines knocks the other one out)
   models [<id>]   models the endpoint reports, discovered from its own
                   catalogue (* = active) [--refresh] [--json]
-  swap            quick-toggle between the first two profiles (hotkey action)
+  swap [<id>]     switch profile: with an id, straight to it; without one, a
+                  numbered picker (enter a row number or an id; blank stays);
+                  with no terminal attached (bar hotkey) it quick-toggles
+                  between the first two profiles
   edit            open the profiles file in $EDITOR
   init            write an example profiles file
   oauth-add <id>  store the currently-logged-in Claude OAuth account as a
                   profile [--name N] [--force] — log into another account
                   with claude /login and repeat to add more
   migrate-glm     import ~/.config/glm-keys.env + the active key [--force]
-  usage --json    per-account usage from ai-usagebar, normalized
+  usage --json    per-account usage from ai-usagebar plus each Claude
+                  login's own limits, normalized
                   [--max-age N] serve the disk cache under N seconds old
                   (default 300; 0 = always fetch)
 
+  hosts [--json]  other machines from hosts.conf (name = ssh destination)
+  @<host> <cmd…>  run any command on that machine, e.g. skal-swap @devbox
+                  run claude-max; run/login/edit get a terminal
+  push <host>     install this CLI on a host [--profiles: also copy
+                  profiles.conf when the host has none]
+  sync <host>     bring a machine up to this one: this CLI, herdr's
+                  config.toml and agent integrations, herdr's saved machine
+                  [--dest user@host] adds a new host first
+                  [--profiles] [--no-herdr]
+  herdr [-y] <id> open a herdr tab running claude on a profile
+                  [--cwd DIR] [--workspace] [--no-focus] [-- claude args]
+  herdr-show      bring the local herdr window up (or open one)
+  fleet --json    snapshot of this machine and every host, for the widget
+
 profiles : ~/.config/skal.swap/profiles.conf
+hosts    : ~/.config/skal.swap/hosts.conf
+homes    : ~/.local/share/skal.swap/homes/<id> (CLAUDE_CONFIG_DIR per profile)
 settings : ~/.claude/settings.json (env.ANTHROPIC_*, env.CLAUDE_CODE_MAX_{CONTEXT,OUTPUT}_TOKENS, model, modelPicker, autoCompactWindow)
 EOF
     exit "${1:-0}"
@@ -220,12 +255,12 @@ readonly MODELS_JQ='
 
 ANTHROPIC_MODELS_URL="${CCS_ANTHROPIC_MODELS_URL:-https://api.anthropic.com/v1/models?limit=1000}"
 
-# Access token for a profile that rides Claude Code's OAuth login: the
-# profile's own store when it has one, else whatever session is live.
+# Access token for a profile that rides Claude Code's OAuth login: wherever
+# that login lives right now, else whatever session is live.
 oauth_token_of() { # oauth_token_of <profile-id> -> token or empty
-    local store tok=""
-    store=$(store_path "$1")
-    [[ -f $store ]] && tok=$(jq -r '.credentials.accessToken // empty' "$store" 2>/dev/null || true)
+    local f tok=""
+    f=$(creds_file_of "$1")
+    [[ -n $f ]] && tok=$(jq -r '.claudeAiOauth.accessToken // empty' "$f" 2>/dev/null || true)
     [[ -n $tok ]] || tok=$(jq -r '.claudeAiOauth.accessToken // empty' "$CREDS" 2>/dev/null || true)
     printf '%s' "$tok"
 }
@@ -381,18 +416,356 @@ icon_of() { # icon_of <profile-id>
     esac
 }
 
-# --- multiple Claude OAuth logins ------------------------------------------
+# --- Claude logins ----------------------------------------------------------
 #
-# Claude Code keeps exactly one OAuth session: ~/.claude/.credentials.json
-# (opaque token blob) plus the oauthAccount block in ~/.claude.json. An
-# `oauth = true` profile stores a bundle of both under the credentials dir
-# and `use` swaps them into place — after syncing the live session back
-# into its own store so token refreshes persist per profile. Account
-# identity rides on oauthAccount.accountUuid: if the live login no longer
-# matches the stored one (a manual /login happened), sync-back is skipped
-# with a warning rather than corrupting the store.
+# A profile with no base_url and no token (or `oauth = true`) is a Claude
+# subscription login. Claude Code keeps one login per config dir:
+# <dir>/.credentials.json plus the oauthAccount block in the dir's
+# .claude.json (~/.claude.json for the default dir). Every login profile owns
+# a config dir of its own under HOMES_DIR, so `run <id>` can start claude on
+# that plan with CLAUDE_CONFIG_DIR while other plans keep running. Everything
+# else in ~/.claude (projects, history, skills, plugins, CLAUDE.md, …) is
+# symlinked in, so all plans share one working memory and /resume works
+# across them.
+#
+# A login lives in exactly one place at a time, never copied: OAuth refresh
+# tokens rotate, and two copies refreshing on their own end with one of them
+# dead. `use <id>` moves the login out of its home into ~/.claude (and moves
+# whichever login was there back into its own home first); `run <id>` while
+# that login sits in ~/.claude moves it home again when the machine has since
+# switched to a provider. The owner of a login is found by account uuid, so
+# the bookkeeping survives a manual /login.
+#
+# Credentials are never synced between machines for the same reason. Each
+# machine runs `login` itself.
 
-is_oauth() { [[ ${P_OAUTH[$1]:-} == 1 ]]; }
+is_oauth() { [[ ${P_OAUTH[$1]:-} == 1 || ( -z ${P_BASE[$1]:-} && -z ${P_TOKEN[$1]:-} ) ]]; }
+
+home_of() { printf '%s/%s' "$HOMES_DIR" "$1"; }
+
+has_creds() { [[ -f $1 ]] && jq -e '.claudeAiOauth.accessToken' "$1" >/dev/null 2>&1; }
+
+# Token expiry in epoch ms; -1 when the file doesn't say. Claude Code zeroes
+# it when a refresh is refused, so 0 reads as expired.
+creds_expiry() { jq -r '.claudeAiOauth.expiresAt // -1' "$1" 2>/dev/null || echo -1; }
+
+home_fingerprint() { # home_fingerprint <id> -> account uuid recorded in the profile's home
+    jq -r '.oauthAccount.accountUuid // .oauthAccount.emailAddress // empty' \
+        "$(home_of "$1")/.claude.json" 2>/dev/null || true
+}
+
+# Login profile whose home records this account ("" when none does).
+profile_by_fp() { # profile_by_fp <fingerprint>
+    local fp=$1 id
+    [[ -n $fp ]] || return 0
+    for id in "${PROFILE_IDS[@]}"; do
+        is_oauth "$id" || continue
+        [[ $(home_fingerprint "$id") == "$fp" ]] && { printf '%s' "$id"; return 0; }
+    done
+    return 0
+}
+
+# Login profile that owns the login in ~/.claude right now ("" when none).
+# A login no home records yet (made with plain claude /login, or from before
+# homes existed) belongs to claim_target.
+global_owner() {
+    has_creds "$CREDS" || return 0
+    local o
+    o=$(profile_by_fp "$(live_fingerprint)")
+    [[ -n $o ]] || o=$(claim_target) || true
+    printf '%s' "$o"
+}
+
+# Where a login profile's credentials are right now: ~/.claude when it is
+# checked out there, else its home. Empty when it isn't logged in here.
+creds_file_of() { # creds_file_of <id>
+    local id=$1 h
+    h="$(home_of "$id")/.credentials.json"
+    if [[ $(global_owner) == "$id" ]]; then printf '%s' "$CREDS"
+    elif has_creds "$h"; then printf '%s' "$h"
+    fi
+}
+
+account_file_of() { # account_file_of <id> -> the .claude.json holding its oauthAccount
+    if [[ $(global_owner) == "$1" ]]; then printf '%s' "$CLAUDE_JSON"
+    else printf '%s' "$(home_of "$1")/.claude.json"; fi
+}
+
+plan_label() { # plan_label <subscriptionType> <rateLimitTier>
+    case $1 in
+    max) case $2 in *20x*) echo "Max 20x" ;; *5x*) echo "Max 5x" ;; *) echo "Max" ;; esac ;;
+    pro) echo "Pro" ;;
+    team) echo "Team" ;;
+    enterprise) echo "Enterprise" ;;
+    "") ;;
+    *) echo "${1^}" ;;
+    esac
+}
+
+# Running claude processes per config dir, counted once per call. A process
+# without CLAUDE_CONFIG_DIR is on ~/.claude, keyed as "@default".
+declare -A SESSIONS=()
+SESSIONS_COUNTED=0
+count_sessions() {
+    [[ $SESSIONS_COUNTED == 1 ]] && return 0
+    SESSIONS_COUNTED=1
+    local pid dir
+    for pid in $(pgrep -u "$(id -u)" -x claude 2>/dev/null || true); do
+        dir=$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | sed -n 's/^CLAUDE_CONFIG_DIR=//p' | head -1) || continue
+        [[ -z $dir || $dir == "$CLAUDE_DIR" ]] && dir=@default
+        SESSIONS[$dir]=$(( ${SESSIONS[$dir]:-0} + 1 ))
+    done
+}
+
+sessions_in() { count_sessions; printf '%s' "${SESSIONS[${1:-@default}]:-0}"; }
+
+# Entries of ~/.claude a profile home keeps to itself instead of linking:
+# the login, the generated settings, and account-scoped state.
+readonly -a HOME_PRIVATE=(
+    .credentials.json settings.json .claude.json .claude.json.backup backups
+    .device-keys.json .session_ingress_token policy-limits.json remote-settings.json
+    daemon daemon.lock daemon.log daemon.status.json jobs .skal-prev-model
+)
+
+is_private() {
+    local n=$1 p
+    for p in "${HOME_PRIVATE[@]}"; do [[ $n == "$p" ]] && return 0; done
+    return 1
+}
+
+# Build or refresh a profile's config dir: link anything new in ~/.claude,
+# drop links whose target went away, seed .claude.json once (onboarding,
+# project trust and MCP servers carry over, the account doesn't), and write
+# settings.json for the profile from the current ~/.claude/settings.json.
+prepare_home() { # prepare_home <id>
+    local id=$1 h e n
+    h=$(home_of "$id")
+    mkdir -p "$h"
+    chmod 700 "$h"
+    for e in "$CLAUDE_DIR"/* "$CLAUDE_DIR"/.[!.]*; do
+        [[ -e $e ]] || continue
+        n=${e##*/}
+        is_private "$n" && continue
+        [[ -e $h/$n || -L $h/$n ]] || ln -s "$e" "$h/$n"
+    done
+    for e in "$h"/* "$h"/.[!.]*; do
+        [[ -L $e && ! -e $e ]] && rm -f "$e"
+    done
+    if [[ ! -f $h/.claude.json ]]; then
+        if [[ -f $CLAUDE_JSON ]]; then
+            jq 'del(.oauthAccount, .clientDataCacheSlots, .primaryApiKey)' "$CLAUDE_JSON" >"$h/.claude.json"
+        else
+            echo '{}' >"$h/.claude.json"
+        fi
+        chmod 600 "$h/.claude.json"
+    fi
+    write_home_settings "$id"
+}
+
+# The profile's settings.json is regenerated from ~/.claude/settings.json on
+# every launch, then given the profile's managed keys the same way `use`
+# would, so a z.ai switch on the machine never leaks into a Claude plan's
+# sessions, and settings you change in ~/.claude reach every profile.
+write_home_settings() { # write_home_settings <id>
+    local id=$1 h global=$SETTINGS
+    h=$(home_of "$id")
+    (
+        SETTINGS="$h/settings.json"
+        CLAUDE_JSON="$h/.claude.json"
+        local prev="$PREV_MODEL"
+        PREV_MODEL="$h/.skal-prev-model"
+        if [[ -f $global ]]; then cat "$global" >"$SETTINGS"; else echo '{}' >"$SETTINGS"; fi
+        if [[ -r $prev ]]; then cat "$prev" >"$PREV_MODEL"; else rm -f "$PREV_MODEL"; fi
+        write_settings_for "$id"
+        chmod 600 "$SETTINGS"
+    )
+}
+
+# Move the login in ~/.claude into its owner's home. A login no profile
+# claims goes to a login profile that has none yet (the one the machine is on
+# first). Freshest wins when the home already holds one for the same account:
+# a refresh rotates the token, so the older copy is the dead one.
+checkin() {
+    has_creds "$CREDS" || return 0
+    local fp owner h
+    fp=$(live_fingerprint)
+    owner=$(profile_by_fp "$fp")
+    if [[ -z $owner ]]; then
+        owner=$(claim_target) || {
+            echo "skal-swap: the login in $CREDS (${fp:-unknown account}) belongs to no profile, so it stays put. Claim it with: skal-swap oauth-add <id>" >&2
+            return 1
+        }
+    fi
+    prepare_home "$owner"
+    h="$(home_of "$owner")/.credentials.json"
+    if ! has_creds "$h" || (( $(creds_expiry "$CREDS") >= $(creds_expiry "$h") )); then
+        cat "$CREDS" >|"$h"
+    fi
+    chmod 600 "$h"
+    if [[ -f $CLAUDE_JSON ]] && jq -e '.oauthAccount' "$CLAUDE_JSON" >/dev/null 2>&1; then
+        rewrite "$(home_of "$owner")/.claude.json" --slurpfile g "$CLAUDE_JSON" '.oauthAccount = $g[0].oauthAccount'
+    fi
+    rm -f "$CREDS"
+    # Sessions on ~/.claude only hold this login when the machine is on it.
+    [[ $(current_id 2>/dev/null) == "$owner" ]] && warn_sessions "" "$owner"
+    return 0
+}
+
+# The legacy bundle swapper's last profile, else the first login profile
+# with no account recorded yet.
+claim_target() {
+    local id
+    for id in "$(active_oauth)" "${PROFILE_IDS[@]}"; do
+        [[ -n $id && -n ${PROFILE_SET[$id]:-} ]] || continue
+        is_oauth "$id" || continue
+        [[ -z $(home_fingerprint "$id") ]] && { printf '%s' "$id"; return 0; }
+    done
+    return 1
+}
+
+# Move a profile's login from its home into ~/.claude.
+checkout() { # checkout <id>
+    local id=$1 h
+    h="$(home_of "$id")/.credentials.json"
+    has_creds "$h" || die "[$id] isn't logged in on this machine. Run: skal-swap login $id"
+    cat "$h" >|"$CREDS"
+    chmod 600 "$CREDS"
+    if [[ -f $CLAUDE_JSON ]]; then
+        rewrite "$CLAUDE_JSON" --slurpfile s "$(home_of "$id")/.claude.json" \
+            '.oauthAccount = $s[0].oauthAccount'
+    fi
+    rm -f "$h"
+    warn_sessions "$(home_of "$id")" "$id"
+}
+
+# Sessions still running on a config dir whose login just moved hold the old
+# tokens in memory and will write refreshed ones back where they started.
+warn_sessions() { # warn_sessions <config-dir|""> <id>
+    local n
+    n=$(sessions_in "$1")
+    (( n > 0 )) || return 0
+    echo "skal-swap: $n claude session(s) still running on $(label_of "$2")'s old location. Restart them so its tokens stay in one place" >&2
+}
+
+# The legacy bundle store (pre-homes): import it into the profile's home once.
+import_legacy_store() { # import_legacy_store <id>
+    local id=$1 store h
+    store="$CRED_DIR/$id.json"
+    [[ -f $store ]] || return 0
+    h=$(home_of "$id")
+    if ! has_creds "$h/.credentials.json" && [[ $(global_owner) != "$id" ]]; then
+        prepare_home "$id"
+        jq '{claudeAiOauth: .credentials}' "$store" >"$h/.credentials.json"
+        chmod 600 "$h/.credentials.json"
+        rewrite "$h/.claude.json" --slurpfile s "$store" '.oauthAccount = $s[0].oauthAccount'
+    fi
+    mv "$store" "$store.imported"
+}
+
+claude_bin() {
+    local p
+    for p in "${CCS_CLAUDE_BIN:-}" "$(command -v claude 2>/dev/null || true)" \
+        "$HOME/.local/share/mise/installs/claude/latest/claude" "$HOME/.local/bin/claude" \
+        "$HOME/.claude/local/claude"; do
+        [[ -n $p && -x $p ]] && { printf '%s' "$p"; return 0; }
+    done
+    die "claude not found on PATH"
+}
+
+cmd_run() { # cmd_run [-y] <id> [-y] [--] [claude args…]
+    local id="" yolo=0
+    # Our own flags may sit before or right after the id; everything after
+    # that (or after --) is claude's.
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+        -y | --yolo | --skip-permissions) yolo=1; shift ;;
+        --) shift; break ;;
+        *) [[ -z $id ]] || break; id=$1; shift ;;
+        esac
+    done
+    [[ -n $id ]] || die "usage: skal-swap run [-y|--skip-permissions] <id> [-- claude args]"
+    (( yolo )) && set -- --dangerously-skip-permissions "$@"
+    load_profiles
+    local bin dir
+    bin=$(claude_bin)
+    dir=$(launch_dir "$id") || exit 1
+    [[ -n $dir ]] || exec "$bin" "$@"
+    CLAUDE_CONFIG_DIR=$dir exec "$bin" "$@"
+}
+
+# Get a profile ready to launch and print the CLAUDE_CONFIG_DIR to use, or
+# nothing when it is what the machine is already on (plain claude then).
+launch_dir() { # launch_dir <id>
+    local id=$1 cur
+    [[ -n ${PROFILE_SET[$id]:-} ]] || die "no profile '$id' (see: skal-swap list)"
+    cur=$(current_id 2>/dev/null) || cur=""
+    [[ $cur == "$id" ]] && return 0
+    if is_oauth "$id"; then
+        import_legacy_store "$id"
+        [[ $(global_owner) == "$id" ]] && checkin
+        has_creds "$(home_of "$id")/.credentials.json" ||
+            die "[$id] isn't logged in on this machine. Run: skal-swap login $id"
+    fi
+    prepare_home "$id"
+    home_of "$id"
+}
+
+cmd_login() { # cmd_login [<id>] [--name N] [--email E]
+    local id="" name="" email=""
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+        --name) name=${2:?--name needs a value}; shift 2 ;;
+        --email) email=${2:?--email needs a value}; shift 2 ;;
+        -*) die "unknown option: $1" ;;
+        *) id=$1; shift ;;
+        esac
+    done
+    if [[ -z $id ]]; then
+        [[ -t 0 ]] || die "usage: skal-swap login <id> [--name N] [--email E]"
+        read -rp "profile id (e.g. claude-max): " id
+        [[ -n $name ]] || read -rp "display name (blank = account name): " name
+    fi
+    [[ $id =~ ^[A-Za-z0-9_.-]+$ ]] || die "profile ids are letters, digits, . _ and -"
+    [[ -r $PROFILES ]] || { mkdir -p "$(dirname "$PROFILES")"; : >"$PROFILES"; chmod 600 "$PROFILES"; }
+    load_profiles
+    if [[ -n ${PROFILE_SET[$id]:-} ]]; then
+        is_oauth "$id" || die "[$id] is a provider profile, not a Claude login"
+    fi
+
+    local bin h fp other
+    bin=$(claude_bin)
+    import_legacy_store "$id"
+    # Logging in again replaces the login wherever it is: bring it home
+    # first, and put the new one back where the old one was afterwards.
+    local was_global=0
+    [[ -n ${PROFILE_SET[$id]:-} && $(global_owner) == "$id" ]] && { was_global=1; checkin; }
+    PROFILE_IDS+=("$id"); PROFILE_SET[$id]=1; P_OAUTH[$id]=1
+    prepare_home "$id"
+    h=$(home_of "$id")
+    rm -f "$h/.credentials.json"
+    local -a args=(auth login --claudeai)
+    [[ -n $email ]] && args+=(--email "$email")
+    CLAUDE_CONFIG_DIR=$h "$bin" "${args[@]}" || die "login failed"
+    has_creds "$h/.credentials.json" || die "login finished without credentials in $h"
+    chmod 600 "$h/.credentials.json" "$h/.claude.json"
+
+    fp=$(home_fingerprint "$id")
+    for other in "${PROFILE_IDS[@]}"; do
+        [[ $other != "$id" ]] && is_oauth "$other" || continue
+        [[ -n $fp && $(home_fingerprint "$other") == "$fp" ]] &&
+            echo "skal-swap: warning: [$other] is the same account. One login per profile keeps tokens in one place" >&2
+    done
+    if ! grep -q "^[[:space:]]*\[$id\]" "$PROFILES"; then
+        [[ -n $name ]] || name=$(jq -r '.oauthAccount.displayName // .oauthAccount.emailAddress // empty' "$h/.claude.json")
+        printf '\n[%s]\nname = "%s"\noauth = true\n' "$id" "${name:-$id}" >>"$PROFILES"
+    fi
+    local sub tier
+    sub=$(jq -r '.claudeAiOauth.subscriptionType // empty' "$h/.credentials.json")
+    tier=$(jq -r '.claudeAiOauth.rateLimitTier // empty' "$h/.credentials.json")
+    [[ $was_global == 1 ]] && checkout "$id"
+    echo "[$id] logged in as $(jq -r '.oauthAccount.emailAddress // "?"' "$h/.claude.json")${sub:+ · $(plan_label "$sub" "$tier")}"
+    echo "launch it with: skal-swap run $id"
+}
 
 # Effective model for a profile: a model picked at switch time wins, then the
 # `model` key in profiles.conf. Empty means "say nothing" and let Claude Code
@@ -548,72 +921,19 @@ apply_model_selection() { # apply_model_selection <profile-id>
     fi
 }
 
-store_path() { printf '%s/%s.json' "$CRED_DIR" "$1"; }
-
 live_fingerprint() {
     jq -r '.oauthAccount.accountUuid // .oauthAccount.emailAddress // empty' "$CLAUDE_JSON" 2>/dev/null || true
 }
 
-write_oauth_state() { # write_oauth_state <id|empty>
-    mkdir -p "$STATE_DIR"
-    printf '%s' "$1" >|"$OAUTH_STATE"
-}
-
-# Active OAuth profile id from the state file ("" when none). Must succeed
-# under set -e even when the file is absent.
+# Pre-homes state: which OAuth profile the old bundle swapper last loaded.
+# Read only to claim an unowned login after the upgrade; never written again.
 active_oauth() {
     [[ -r $OAUTH_STATE ]] || return 0
     cat "$OAUTH_STATE"
 }
 
-# Persist the live OAuth session into the store of the profile the state
-# file says is active (no-op when none). Fingerprint-guarded.
-sync_back() {
-    local cur live_fp stored_fp
-    cur=$(active_oauth)
-    [[ -n $cur && -f $(store_path "$cur") ]] || return 0
-    local store
-    store=$(store_path "$cur")
-    stored_fp=$(jq -r '.fingerprint // empty' "$store" 2>/dev/null) || true
-    if [[ -f $CREDS ]]; then
-        live_fp=$(live_fingerprint)
-        if [[ -n $live_fp && -n $stored_fp && $live_fp != "$stored_fp" ]]; then
-            echo "skal-swap: live login ($live_fp) is not the one stored for [$cur] — skipping sync-back" >&2
-            return 0
-        fi
-        local tmp
-        tmp=$(mktemp)
-        jq -n --slurpfile creds "$CREDS" --slurpfile acct "$CLAUDE_JSON" \
-            --arg fp "${live_fp:-$stored_fp}" --argjson now "$(date +%s)" \
-            '{fingerprint: $fp, stored_at: $now,
-              credentials: ($creds[0].claudeAiOauth // null),
-              oauthAccount: ($acct[0].oauthAccount // null)}' >"$tmp" &&
-            cat "$tmp" >|"$store"
-        rm -f "$tmp"
-        chmod 600 "$store"
-    fi
-}
-
-# Swap an OAuth profile's bundle into the live files.
-load_oauth() { # load_oauth <id>
-    local store
-    store=$(store_path "$1")
-    [[ -f $store ]] || die "no OAuth store for [$1] — run: skal-swap oauth-add $1"
-    jq -e '.credentials != null' "$store" >/dev/null 2>&1 || die "OAuth store for [$1] has no credentials"
-
-    local tmp
-    tmp=$(mktemp)
-    jq -n --slurpfile s "$store" '{claudeAiOauth: $s[0].credentials}' >"$tmp" &&
-        cat "$tmp" >|"$CREDS"
-    rm -f "$tmp"
-    chmod 600 "$CREDS"
-
-    if [[ -f $CLAUDE_JSON ]] && jq -e '.oauthAccount != null' "$store" >/dev/null 2>&1; then
-        rewrite "$CLAUDE_JSON" --slurpfile s "$store" \
-            '.oauthAccount = $s[0].oauthAccount'
-    fi
-}
-
+# Claim the login that's in ~/.claude right now as a profile (for a login
+# made with plain claude /login). New logins are simpler with `login`.
 cmd_oauth_add() { # cmd_oauth_add <id> [--name N] [--force]
     local id=${1:?usage: skal-swap oauth-add <id> [--name N]}
     shift
@@ -625,33 +945,22 @@ cmd_oauth_add() { # cmd_oauth_add <id> [--name N] [--force]
         *) die "unknown option: $1" ;;
         esac
     done
-    [[ -f $CREDS ]] || die "no $CREDS — log into Claude first (claude /login)"
-    jq -e '.claudeAiOauth != null' "$CREDS" >/dev/null 2>&1 || die "no OAuth session in $CREDS — log in first (claude /login)"
+    has_creds "$CREDS" || die "no OAuth session in $CREDS. Log in first (claude /login), or use: skal-swap login $id"
 
     load_profiles
-    [[ -z ${PROFILE_SET[$id]:-} || $force == 1 ]] || die "profile [$id] exists (use --force to refresh its store)"
+    [[ -z ${PROFILE_SET[$id]:-} || $force == 1 ]] || die "profile [$id] exists (use --force to claim the live login for it)"
+    local fp owner
+    fp=$(live_fingerprint)
+    owner=$(profile_by_fp "$fp")
+    [[ -z $owner || $owner == "$id" ]] || die "the live login already belongs to [$owner]"
     if [[ -z ${PROFILE_SET[$id]:-} ]]; then
         name=${name:-$(jq -r '.oauthAccount.displayName // .oauthAccount.emailAddress // "Claude login"' "$CLAUDE_JSON")}
         printf '\n[%s]\nname = "%s"\noauth = true\n' "$id" "$name" >>"$PROFILES"
+        PROFILE_IDS+=("$id"); PROFILE_SET[$id]=1; P_OAUTH[$id]=1
     fi
-
-    mkdir -p "$CRED_DIR"
-    write_oauth_state "" # sync_back would target the new id's empty store
-    local fp
-    fp=$(live_fingerprint)
-    local tmp
-    tmp=$(mktemp)
-    jq -n --slurpfile creds "$CREDS" --slurpfile acct "$CLAUDE_JSON" \
-        --arg fp "$fp" --argjson now "$(date +%s)" \
-        '{fingerprint: $fp, stored_at: $now,
-          credentials: ($creds[0].claudeAiOauth // null),
-          oauthAccount: ($acct[0].oauthAccount // null)}' >"$tmp" &&
-        cat "$tmp" >|"$(store_path "$id")"
-    rm -f "$tmp"
-    chmod 600 "$(store_path "$id")"
-    write_oauth_state "$id"
-    echo "stored OAuth login as [$id] (fingerprint ${fp:0:8}…)"
-    echo "to add another account: claude /login the other one, then: skal-swap oauth-add <id-2>"
+    prepare_home "$id"
+    rewrite "$(home_of "$id")/.claude.json" --slurpfile g "$CLAUDE_JSON" '.oauthAccount = $g[0].oauthAccount'
+    echo "claimed the live login as [$id] (${fp:0:8}…). It stays in ~/.claude while the machine is on it"
 }
 
 # Same label rule as the ai-usagebar multi-account shim, so usage ids match.
@@ -680,6 +989,9 @@ usage_vendor_of_host() { # -> vendor name, or fails for uncovered hosts
 
 usage_id_of() { # usage_id_of <profile-id> <current-id> -> usage entry id or ""
     local id=$1 cur=$2 marker=${P_USAGE[$id]:-} vendor p
+    # Claude logins report their own limits (oauth_usage_entries), one entry
+    # per profile, so every plan has numbers whichever one the machine is on.
+    is_oauth "$id" && { echo "claude@$id"; return 0; }
     if [[ -n $marker ]]; then
         for v in "${USAGE_VENDORS[@]}"; do
             [[ $v == "$marker" ]] || continue
@@ -723,9 +1035,10 @@ current_id() {
         done
         return 1
     fi
-    oa=$(active_oauth)
-    if [[ -n $oa && -n ${PROFILE_SET[$oa]:-} && -z ${P_TOKEN[$oa]:-} ]]; then
-        echo "$oa"; return 0
+    if [[ -z $cb ]]; then
+        # On a Claude login: whoever owns the login in ~/.claude.
+        oa=$(global_owner)
+        [[ -n $oa ]] && { echo "$oa"; return 0; }
     fi
     for id in "${PROFILE_IDS[@]}"; do
         tok=${P_TOKEN[$id]:-} base=${P_BASE[$id]:-}
@@ -758,10 +1071,30 @@ apply_profile() { # apply_profile <id>
     [[ -n ${PROFILE_SET[$id]:-} ]] || die "no profile '$id' (see: skal-swap list)"
     [[ -f $SETTINGS ]] || die "no $SETTINGS — run claude once first"
 
-    # Leaving (or re-applying) an OAuth profile: persist the live session's
-    # refreshed tokens into that profile's store before touching anything.
-    sync_back
+    # A Claude login moves into ~/.claude, and whichever login was there moves
+    # back to its own home first. Switching to a provider leaves the login
+    # where it is: provider sessions never touch it, and other tools (the
+    # Omarchy usage bar) keep reading the machine's Claude login meanwhile.
+    if is_oauth "$id"; then
+        import_legacy_store "$id"
+        if [[ $(global_owner) != "$id" ]]; then
+            has_creds "$(home_of "$id")/.credentials.json" ||
+                die "[$id] isn't logged in on this machine. Run: skal-swap login $id"
+            checkin || die "not switching: that would overwrite a login no profile owns"
+            checkout "$id"
+        fi
+    fi
 
+    write_settings_for "$id"
+    rm -f "$OAUTH_STATE"
+    echo "switched to $(label_of "$id") — restart running claude sessions to pick it up"
+}
+
+# Write a profile's managed keys into $SETTINGS (and drop the resolved-model
+# cache in $CLAUDE_JSON). Shared by `use` (~/.claude) and `run` (the
+# profile's home, with both paths pointed there).
+write_settings_for() { # write_settings_for <id>
+    local id=$1
     local -a pairs=()
     [[ -n ${P_TOKEN[$id]:-} ]] && pairs+=("ANTHROPIC_AUTH_TOKEN"$'\t'"${P_TOKEN[$id]}")
     [[ -n ${P_BASE[$id]:-} ]] && pairs+=("ANTHROPIC_BASE_URL"$'\t'"${P_BASE[$id]}")
@@ -831,36 +1164,59 @@ apply_profile() { # apply_profile <id>
     if [[ -f $CLAUDE_JSON ]]; then
         rewrite "$CLAUDE_JSON" 'del(.clientDataCacheSlots)'
     fi
-
-    if is_oauth "$id"; then
-        load_oauth "$id"
-        write_oauth_state "$id"
-    else
-        write_oauth_state ""
-    fi
-    echo "switched to $(label_of "$id") — restart running claude sessions to pick it up"
 }
 
 status_json() {
-    local cur id tsv uid prefix
+    local cur id uid prefix owner login rows=""
     cur=$(current_id) || cur=""
-    tsv=""
+    owner=$(global_owner)
+    count_sessions
     for id in "${PROFILE_IDS[@]}"; do
         prefix=${P_TOKEN[$id]:-}
         [[ -n $prefix ]] && prefix=$(mask "$prefix")
         uid=$(usage_id_of "$id" "$cur")
-        tsv+="$id"$'\t'"$(label_of "$id")"$'\t'"$(host_of "${P_BASE[$id]:-}")"$'\t'"$prefix"$'\t'"$uid"$'\t'"$(icon_of "$id")"$'\t'"$(is_oauth "$id" && echo 1 || echo 0)"$'\n'
+        login=null
+        is_oauth "$id" && login=$(login_json "$id" "$owner")
+        local sessions=${SESSIONS[$(home_of "$id")]:-0}
+        # Sessions on ~/.claude run whatever the machine is on.
+        [[ $id == "$cur" ]] && sessions=$(( sessions + ${SESSIONS[@default]:-0} ))
+        rows+=$(jq -nc --arg id "$id" --arg name "$(label_of "$id")" --arg host "$(host_of "${P_BASE[$id]:-}")" \
+            --arg tp "$prefix" --arg uid "$uid" --arg icon "$(icon_of "$id")" \
+            --argjson oauth "$(is_oauth "$id" && echo true || echo false)" \
+            --argjson login "$login" --argjson sessions "$sessions" \
+            '{id: $id, name: $name, host: $host, token_prefix: $tp,
+              usage_id: (if $uid == "" then null else $uid end),
+              icon: (if $icon == "" then "claude" else $icon end),
+              oauth: $oauth, login: $login, sessions: $sessions}')$'\n'
     done
-    printf '%s' "$tsv" | jq -R -s --arg cur "$cur" --arg settings "$SETTINGS" '
-        split("\n") | map(select(length > 0)) | map(split("\t"))
-        | map({id: .[0], name: .[1], host: .[2], token_prefix: .[3],
-               usage_id: (if .[4] == "" then null else .[4] end),
-               icon: (.[5] // "claude"),
-               oauth: (.[6] == "1")})
-        | {settings: $settings,
-           current: (if $cur == "" then null else $cur end),
-           current_known: ($cur != ""),
-           profiles: .}'
+    printf '%s' "$rows" | jq -s --arg cur "$cur" --arg settings "$SETTINGS" --arg hn "$(hostname -s 2>/dev/null || hostname)" \
+        --argjson hd "$(herdr_bin >/dev/null && echo true || echo false)" '
+        {settings: $settings, hostname: $hn, herdr: $hd,
+         current: (if $cur == "" then null else $cur end),
+         current_known: ($cur != ""),
+         profiles: .}'
+}
+
+# Who a login profile is logged in as here, and on which plan.
+login_json() { # login_json <id> <global-owner>
+    local id=$1 owner=$2 cf af
+    if [[ $owner == "$id" ]]; then cf=$CREDS af=$CLAUDE_JSON
+    else cf="$(home_of "$id")/.credentials.json" af="$(home_of "$id")/.claude.json"; fi
+    if ! has_creds "$cf"; then
+        jq -nc --arg email "$(jq -r '.oauthAccount.emailAddress // empty' "$af" 2>/dev/null || true)" \
+            '{logged_in: false, email: (if $email == "" then null else $email end), plan: null, where: null, expired: false}'
+        return
+    fi
+    local sub tier exp
+    sub=$(jq -r '.claudeAiOauth.subscriptionType // empty' "$cf")
+    tier=$(jq -r '.claudeAiOauth.rateLimitTier // empty' "$cf")
+    exp=$(creds_expiry "$cf")
+    jq -nc --arg email "$(jq -r '.oauthAccount.emailAddress // empty' "$af" 2>/dev/null || true)" \
+        --arg plan "$(plan_label "$sub" "$tier")" --arg where "$([[ $cf == "$CREDS" ]] && echo default || echo home)" \
+        --argjson exp "${exp:-0}" --argjson now "$(date +%s%3N)" \
+        '{logged_in: true, email: (if $email == "" then null else $email end),
+          plan: (if $plan == "" then null else $plan end), where: $where,
+          expired: ($exp >= 0 and $exp < $now)}'
 }
 
 status_human() {
@@ -877,7 +1233,11 @@ status_human() {
     fi
     for id in "${PROFILE_IDS[@]}"; do
         [[ $id == "$cur" ]] && continue
-        echo "   switch to: $(label_of "$id") ($(mask "${P_TOKEN[$id]:-none}")) @ $(host_of "${P_BASE[$id]:-}")"
+        if is_oauth "$id"; then
+            echo "   switch to: $(label_of "$id") (login$(has_creds "$(home_of "$id")/.credentials.json" || echo ", not logged in here"))"
+        else
+            echo "   switch to: $(label_of "$id") ($(mask "${P_TOKEN[$id]:-none}")) @ $(host_of "${P_BASE[$id]:-}")"
+        fi
     done
     return 0
 }
@@ -893,15 +1253,41 @@ cmd_list() {
     done
 }
 
-cmd_swap() {
-    local cur
-    (( ${#PROFILE_IDS[@]} >= 2 )) || die "need 2+ profiles to swap"
-    cur=$(current_id) || cur=""
-    if [[ $cur == "${PROFILE_IDS[0]}" ]]; then
-        apply_profile "${PROFILE_IDS[1]}"
-    else
-        apply_profile "${PROFILE_IDS[0]}"
+cmd_swap() { # cmd_swap [profile-id]
+    local cur i id pick
+    if [[ -n ${1:-} ]]; then
+        (( $# == 1 )) || die "usage: skal-swap swap [profile-id]"
+        apply_profile "$1"
+        return 0
     fi
+    # No terminal (bar-widget hotkey, @host): nobody to ask, so keep the
+    # historical quick-toggle between the first two profiles.
+    if [[ ! -t 0 ]]; then
+        (( ${#PROFILE_IDS[@]} >= 2 )) || die "need 2+ profiles to swap"
+        cur=$(current_id) || cur=""
+        if [[ $cur == "${PROFILE_IDS[0]}" ]]; then
+            apply_profile "${PROFILE_IDS[1]}"
+        else
+            apply_profile "${PROFILE_IDS[0]}"
+        fi
+        return 0
+    fi
+    cur=$(current_id) || cur=""
+    printf '%-3s %-2s %-18s %-28s %s\n' "" "" ID NAME HOST
+    for i in "${!PROFILE_IDS[@]}"; do
+        id=${PROFILE_IDS[$i]}
+        printf '%-3s %-2s %-18s %-28s %s\n' "$((i + 1))" \
+            "$([[ $id == "$cur" ]] && echo '*' || echo ' ')" \
+            "$id" "$(label_of "$id")" "$(host_of "${P_BASE[$id]:-}")"
+    done
+    read -rp "swap to (number or id, blank to stay): " pick
+    [[ -n $pick ]] || return 0
+    if [[ $pick =~ ^[0-9]+$ ]]; then
+        (( pick >= 1 && pick <= ${#PROFILE_IDS[@]} )) ||
+            die "no row $pick (1-${#PROFILE_IDS[@]})"
+        pick=${PROFILE_IDS[pick - 1]}
+    fi
+    apply_profile "$pick"
 }
 
 usage_bin() { # <path of the ai-usagebar to use, or fail>
@@ -955,28 +1341,523 @@ cmd_usage_json() { # args: --json [--max-age N]  (N=0 always fetches)
         fi
     fi
 
-    local out bin
-    bin=$(usage_bin) || {
-        # No CLI at all — fall back to whatever cache exists, however old.
-        if [[ -n $(usage_cache) ]]; then jq -c '.report' <<<"$(usage_cache)"; else echo '{"entries":[],"error":"ai-usagebar not found"}'; fi
-        return 0
-    }
-    out=$(timeout 90 "$bin" usage --json 2>/dev/null) || true
-    if [[ -z $out ]]; then
-        if [[ -n $(usage_cache) ]]; then jq -c '.report' <<<"$(usage_cache)"
-        else echo '{"entries":[],"error":"ai-usagebar returned nothing"}'; fi
+    load_profiles
+    # One fetch at a time: the widget, snapshots and fleet polls all land
+    # here, and every extra fetch spends the same per-token rate limit. A
+    # caller that finds one running gets the cache instead.
+    mkdir -p "$STATE_DIR"
+    exec 9>"$STATE_DIR/usage.lock"
+    if ! flock -n 9; then
+        if [[ -n $(usage_cache) ]]; then jq -c '.report' <<<"$(usage_cache)"; else echo '{"entries":[]}'; fi
         return 0
     fi
-    local report
-    report=$(printf '%s' "$out" | jq 'if (type == "object" and has("entries")) then
-        {entries: [.entries[] | {id: .id, plan: .plan, status: .status,
-                                  short: ([.metrics[]?.value] | join(" · ")),
-                                  percent: ([.metrics[]?.percent] | max // 0),
-                                  metrics: [.metrics[]? | {label, value, percent, detail, reset_at, severity}],
-                                  error: .error}]}
-        else {entries: [], error: "unexpected ai-usagebar output"} end')
+    local out="" bin report
+    if bin=$(usage_bin); then
+        out=$(timeout 90 "$bin" usage --json 2>/dev/null) || true
+    fi
+    if [[ -n $out ]]; then
+        report=$(printf '%s' "$out" | jq 'if (type == "object" and has("entries")) then
+            {entries: [.entries[] | {id: .id, plan: .plan, status: .status,
+                                      short: ([.metrics[]?.value] | join(" · ")),
+                                      percent: ([.metrics[]?.percent] | max // 0),
+                                      metrics: [.metrics[]? | {label, value, percent, detail, reset_at, severity}],
+                                      error: .error}]}
+            else {entries: [], error: "unexpected ai-usagebar output"} end')
+    elif [[ -n $(usage_cache) ]]; then
+        report=$(jq '.report' <<<"$(usage_cache)")   # provider rows: stale beats nothing
+    else
+        report='{"entries":[]}'
+    fi
+    local claude prev
+    prev=$(usage_cache | jq -c '[.report.entries[]? | select(.id | startswith("claude@"))]' 2>/dev/null)
+    claude=$(oauth_usage_entries "${prev:-[]}" "$report")
+    report=$(jq --argjson c "$claude" '.entries = ([.entries[] | select(.id | startswith("claude@") | not)] + $c)' <<<"$report")
     printf '%s\n' "$report"
     usage_cache "$report" || true
+}
+
+# Each Claude login's own limits, from the endpoint behind Claude Code's
+# /usage. The token is only read, never refreshed here: a refresh rotates it,
+# and that belongs to the claude sessions using the login. An expired token
+# says so instead, and comes back after the next launch.
+oauth_usage_entries() { # oauth_usage_entries <previous claude@ entries json> <ai-usagebar report>
+    local prev=${1:-[]} base=${2:-'{}'} id cf tok exp resp rows="" plan now_ms dir
+    now_ms=$(date +%s%3N)
+    for id in "${PROFILE_IDS[@]}"; do
+        is_oauth "$id" || continue
+        cf=$(creds_file_of "$id")
+        [[ -n $cf ]] || continue
+        exp=$(creds_expiry "$cf")
+        # An idle plan's access token runs out after a few hours, since only
+        # a running session refreshes it. With no session on that login,
+        # `claude auth status` has Claude Code refresh it (its own lock and
+        # rotation, nothing done by hand here). With a session running, that
+        # session owns the refresh.
+        if (( exp >= 0 && exp < now_ms + 300000 )); then
+            if [[ $cf == "$CREDS" ]]; then dir=""; else dir=$(home_of "$id"); fi
+            if (( $(sessions_in "$dir") == 0 )); then
+                local bin
+                if bin=$(claude_bin 2>/dev/null); then
+                    if [[ -n $dir ]]; then CLAUDE_CONFIG_DIR=$dir timeout 30 "$bin" auth status >/dev/null 2>&1 || true
+                    else timeout 30 "$bin" auth status >/dev/null 2>&1 || true; fi
+                fi
+                exp=$(creds_expiry "$cf")
+            fi
+        fi
+        tok=$(jq -r '.claudeAiOauth.accessToken // empty' "$cf")
+        plan=$(plan_label "$(jq -r '.claudeAiOauth.subscriptionType // empty' "$cf")" \
+            "$(jq -r '.claudeAiOauth.rateLimitTier // empty' "$cf")")
+        local err=""
+        # The login in ~/.claude is the one ai-usagebar's own anthropic entry
+        # just read, with the same token. Asking again a second later is what
+        # trips the endpoint's rate limit, so reuse its numbers when it got
+        # some.
+        if [[ $cf == "$CREDS" ]] && jq -e '.entries[]? | select(.id == "anthropic" and .status == "ready" and (.metrics | length) > 0)' <<<"$base" >/dev/null 2>&1; then
+            rows+=$(jq -c --arg id "claude@$id" --arg plan "$plan" --argjson now "$(date +%s)" '
+                .entries[] | select(.id == "anthropic")
+                | [.metrics[] | . + {label: (.label | sub(" *\\(5h\\)$"; "") | sub(" *\\(7d\\)$"; "")
+                                              | if . == "Session" or . == "Weekly" then . else "Weekly " + . end)}] as $m
+                | {id: $id, plan: $plan, status: "ok", as_of: $now,
+                   short: ($m | map("\(.percent)%") | join(" · ")),
+                   percent: ([$m[].percent] | max // 0), metrics: $m, error: null}' <<<"$base")$'\n'
+            continue
+        fi
+        if (( exp >= 0 && exp < now_ms )); then
+            err="token expired: launch once to refresh, or log in again"
+        else
+            resp=$(curl -sS -m 10 --max-filesize 1048576 --config /dev/fd/3 "$OAUTH_USAGE_URL" 3<<<"$(
+                curl_config_header "authorization" "Bearer $tok"
+                curl_config_header "anthropic-beta" "oauth-2025-04-20")" 2>/dev/null) || resp=""
+            if [[ -z $resp ]]; then
+                err="usage endpoint unreachable"
+            elif jq -e '.error' <<<"$resp" >/dev/null 2>&1; then
+                err=$(jq -r '.error.message // .error // empty' <<<"$resp" 2>/dev/null || true)
+                [[ -n $err ]] || err="usage endpoint error"
+            fi
+        fi
+        if [[ -n $err ]]; then
+            # Keep the last good numbers, marked with their age, rather than
+            # blanking the row over a rate limit or a blip.
+            rows+=$(jq -c --arg id "claude@$id" --arg plan "$plan" --arg err "$err" '
+                (map(select(.id == $id and (.metrics | length) > 0)) | first) as $old
+                | if $old then $old + {plan: $plan, status: "stale", error: $err}
+                  else {id: $id, plan: $plan, status: "error", short: "", percent: 0,
+                        metrics: [], error: $err} end' <<<"$prev")$'\n'
+            continue
+        fi
+        rows+=$(jq -c --arg id "claude@$id" --arg plan "$plan" --argjson now "$(date +%s)" '
+            def limit_name: if .kind == "session" then "Session"
+                       elif .kind == "weekly_all" then "Weekly"
+                       elif .kind == "weekly_scoped" then "Weekly " + (.scope.model.display_name // .scope.surface // "scoped")
+                       else (.kind // "limit") end;
+            def win($l; $w): if $w == null then empty
+                             else {label: $l, percent: ($w.utilization | floor), resets_at: $w.resets_at, severity: null} end;
+            (if (.limits | type) == "array" and (.limits | length) > 0
+             then [.limits[] | {label: limit_name, percent: (.percent // 0), resets_at, severity}]
+             else [win("Session"; .five_hour), win("Weekly"; .seven_day)] end) as $m
+            | {id: $id, plan: $plan, status: "ok", as_of: $now,
+               short: ($m | map("\(.percent)%") | join(" · ")),
+               percent: ([$m[].percent] | max // 0),
+               metrics: [$m[] | {label, value: "\(.percent)%", percent, detail: null,
+                                 reset_at: .resets_at, severity}],
+               error: null}' <<<"$resp" 2>/dev/null)$'\n'
+    done
+    printf '%s' "$rows" | jq -s 'map(select(. != null))'
+}
+
+# --- other machines -------------------------------------------------------
+#
+# hosts.conf names the machines the widget shows next to this one:
+#
+#     devbox = outcrop-labs        # name = ssh destination
+#
+# Each host runs its own copy of this CLI (`push` installs it) with its own
+# profiles and logins; nothing here reaches into another machine's files.
+
+declare -a HOST_NAMES=()
+declare -A HOST_DEST=()
+
+load_hosts() {
+    [[ -r $HOSTS_FILE ]] || return 0
+    local name dest
+    while IFS=$'\t' read -r name dest; do
+        [[ -n $name && -n $dest ]] || continue
+        HOST_NAMES+=("$name"); HOST_DEST[$name]=$dest
+    done < <(awk '
+        /^[ \t]*(#|$)/ { next }
+        { sub(/[ \t]#.*$/, "")
+          if (index($0, "=")) { n = substr($0, 1, index($0, "=") - 1); d = substr($0, index($0, "=") + 1) }
+          else { n = $1; d = $2 }
+          gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", d)
+          print n "\t" d }' "$HOSTS_FILE")
+}
+
+host_dest() { # host_dest <name> -> ssh destination
+    load_hosts
+    [[ -n ${HOST_DEST[$1]:-} ]] || die "no host '$1' in $HOSTS_FILE"
+    printf '%s' "${HOST_DEST[$1]}"
+}
+
+REMOTE_CLI='~/.local/bin/skal-swap'
+
+remote_cmd() { # remote_cmd <args…> -> the remote CLI invocation, quoted
+    local out=$REMOTE_CLI a
+    for a in "$@"; do out+=" $(printf '%q' "$a")"; done
+    printf '%s' "$out"
+}
+
+cmd_at() { # cmd_at <host> <cmd…>
+    local name=$1 dest
+    shift
+    dest=$(host_dest "$name")
+    [[ $# -gt 0 ]] || set -- status
+    case $1 in
+    run | login | edit)
+        # A terminal, and a login shell so claude starts with the user's
+        # full environment (mise, PATH) like a session opened by hand.
+        local inner
+        inner="exec $(remote_cmd "$@")"
+        exec ssh -t "$dest" "exec \"\${SHELL:-/bin/sh}\" -lic $(printf '%q' "$inner")"
+        ;;
+    *)
+        exec ssh -o BatchMode=yes -o ConnectTimeout=5 "$dest" "$(remote_cmd "$@")"
+        ;;
+    esac
+}
+
+cmd_hosts() {
+    load_hosts
+    if [[ ${1:-} == "--json" ]]; then
+        local n rows=""
+        for n in "${HOST_NAMES[@]}"; do rows+="$n"$'\t'"${HOST_DEST[$n]}"$'\n'; done
+        printf '%s' "$rows" | jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {name: .[0], dest: .[1]})'
+        return
+    fi
+    [[ ${#HOST_NAMES[@]} -gt 0 ]] || { echo "no hosts yet. Add 'name = ssh-destination' lines to $HOSTS_FILE"; return 0; }
+    for n in "${HOST_NAMES[@]}"; do printf '%-12s %s\n' "$n" "${HOST_DEST[$n]}"; done
+}
+
+cmd_push() { # cmd_push <host> [--profiles]
+    local name=${1:?usage: skal-swap push <host> [--profiles]} dest
+    dest=$(host_dest "$name")
+    ssh -o BatchMode=yes "$dest" 'command -v jq >/dev/null && command -v curl >/dev/null' ||
+        die "$name needs jq and curl installed"
+    ssh -o BatchMode=yes "$dest" 'mkdir -p ~/.local/bin && cat > ~/.local/bin/skal-swap.new && chmod 755 ~/.local/bin/skal-swap.new && mv -f ~/.local/bin/skal-swap.new ~/.local/bin/skal-swap' \
+        <"$(readlink -f "${BASH_SOURCE[0]}")"
+    echo "installed skal-swap on $name ($dest)"
+    if [[ ${2:-} == "--profiles" ]]; then
+        # Provider keys only travel when the host has no profiles yet; Claude
+        # logins never travel (each machine runs `login` itself).
+        if ssh -o BatchMode=yes "$dest" 'test -e ~/.config/skal.swap/profiles.conf'; then
+            echo "$name already has a profiles.conf, left alone"
+        else
+            ssh -o BatchMode=yes "$dest" 'umask 077 && mkdir -p ~/.config/skal.swap && cat > ~/.config/skal.swap/profiles.conf' <"$PROFILES"
+            echo "copied profiles.conf to $name. Log Claude plans in there with: skal-swap @$name login <id>"
+        fi
+    fi
+}
+
+# This machine in one JSON: status plus usage. Usage comes from the cache
+# whatever its age, with a detached refresh when it's stale, so a snapshot
+# (and the widget waiting on one over ssh) never blocks on the network.
+cmd_snapshot() {
+    load_profiles
+    local status usage fetched
+    status=$(status_json)
+    usage=$(usage_cache)
+    fetched=$( [[ -n $usage ]] && jq -r '.fetched_at // 0' <<<"$usage" || echo 0)
+    if (( $(date +%s) - fetched >= 300 )); then
+        setsid "$(readlink -f "${BASH_SOURCE[0]}")" usage --json --max-age 300 </dev/null >/dev/null 2>&1 &
+    fi
+    [[ -n $usage ]] && usage=$(jq -c '.report' <<<"$usage") || usage='{"entries":[]}'
+    jq -nc --argjson s "$status" --argjson u "$usage" --argjson f "$fetched" \
+        '{status: $s, usage: $u, usage_fetched_at: $f}'
+}
+
+cmd_fleet() {
+    load_hosts
+    local tmp n self
+    tmp=$(mktemp -d)
+    self=$(readlink -f "${BASH_SOURCE[0]}")
+    for n in "${HOST_NAMES[@]}"; do
+        ( timeout 20 ssh -o BatchMode=yes -o ConnectTimeout=5 "${HOST_DEST[$n]}" \
+              "$(remote_cmd snapshot)" >"$tmp/$n.json" 2>"$tmp/$n.err" </dev/null ||
+              echo $? >"$tmp/$n.rc" ) &
+    done
+    "$self" snapshot >"$tmp/.local.json" 2>/dev/null || echo '{}' >"$tmp/.local.json"
+    wait
+    local rows=""
+    rows+=$(jq -c '{name: "local", dest: null, local: true, ok: true, error: null} + .' "$tmp/.local.json")$'\n'
+    for n in "${HOST_NAMES[@]}"; do
+        if [[ ! -e $tmp/$n.rc ]] && jq -e '.status' "$tmp/$n.json" >/dev/null 2>&1; then
+            rows+=$(jq -c --arg n "$n" --arg d "${HOST_DEST[$n]}" \
+                '{name: $n, dest: $d, local: false, ok: true, error: null} + .' "$tmp/$n.json")$'\n'
+        else
+            local err
+            err=$(tail -1 "$tmp/$n.err" 2>/dev/null)
+            [[ -n $err ]] || err="unreachable"
+            [[ $err == *skal-swap* && ( $err == *"o such file"* || $err == *"not found"* ) ]] && err="skal-swap not installed. Run: skal-swap push $n"
+            rows+=$(jq -nc --arg n "$n" --arg d "${HOST_DEST[$n]}" --arg e "$err" \
+                '{name: $n, dest: $d, local: false, ok: false, error: $e, status: null, usage: null}')$'\n'
+        fi
+    done
+    rm -rf "$tmp"
+    printf '%s' "$rows" | jq -sc '{hosts: .}'
+}
+
+# --- herdr ----------------------------------------------------------------
+#
+# herdr (herdr.dev) runs agents in a persistent terminal workspace. `herdr
+# <id>` opens a tab there with CLAUDE_CONFIG_DIR set for the profile and
+# starts claude in it through `herdr agent start`, so herdr recognises it as
+# a claude agent like any other. On another machine (`@host herdr <id>`) the
+# tab lands in that machine's herdr server, which the local herdr shows under
+# its saved SSH machine.
+
+herdr_bin() {
+    local p
+    for p in "${CCS_HERDR_BIN:-}" "$(command -v herdr 2>/dev/null || true)" "$HOME/.local/bin/herdr" \
+        "$HOME/.cargo/bin/herdr"; do
+        [[ -n $p && -x $p ]] && { printf '%s' "$p"; return 0; }
+    done
+    return 1
+}
+
+herdr_running() { "$@" status server 2>/dev/null | grep -q 'status: running'; }
+
+# Agent names are [a-z][a-z0-9_-]{0,31} and unique among live agents.
+herdr_agent_name() { # herdr_agent_name <profile-id> <herdr argv…>
+    local id=$1 base n=1 name taken
+    shift
+    base=$(printf '%s' "$id" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_-' '-' | sed 's/^[^a-z]*//')
+    base=${base:0:28}
+    [[ -n $base ]] || base=claude
+    taken=$("$@" agent list 2>/dev/null | jq -r '.. | objects | .name? // empty' 2>/dev/null || true)
+    name=$base
+    while grep -qxF "$name" <<<"$taken"; do n=$((n + 1)); name="$base-$n"; done
+    printf '%s' "$name"
+}
+
+cmd_herdr() { # cmd_herdr [-y] <id> [--cwd DIR] [--workspace] [--no-focus] [-- claude args]
+    local id="" yolo=0 cwd=$HOME new_ws=0 focus=1 session=""
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+        -y | --yolo | --skip-permissions) yolo=1; shift ;;
+        --cwd) cwd=${2:?--cwd needs a directory}; shift 2 ;;
+        --workspace) new_ws=1; shift ;;
+        --no-focus) focus=0; shift ;;
+        --session) session=${2:?--session needs a name}; shift 2 ;;
+        --) shift; break ;;
+        -*) die "unknown option: $1" ;;
+        *) [[ -z $id ]] || break; id=$1; shift ;;
+        esac
+    done
+    [[ -n $id ]] || die "usage: skal-swap herdr [-y] <id> [--cwd DIR] [--workspace] [--no-focus] [--session S] [-- claude args]"
+    (( yolo )) && set -- --dangerously-skip-permissions "$@"
+    load_profiles
+    local h dir
+    h=$(herdr_bin) || die "herdr isn't installed on this machine"
+    # A named herdr session is its own server; every call below targets it.
+    local -a hs=("$h")
+    [[ -n $session ]] && hs+=(--session "$session")
+    dir=$(launch_dir "$id") || exit 1
+
+    if ! herdr_running "${hs[@]}"; then
+        # No server yet: start a headless one; a client attaches to it later.
+        setsid "${hs[@]}" server </dev/null >/dev/null 2>&1 &
+        local i
+        for i in $(seq 20); do herdr_running "${hs[@]}" && break; sleep 0.25; done
+        herdr_running "${hs[@]}" || die "herdr server didn't start"
+    fi
+
+    local -a where=(--cwd "$cwd" --label "$(label_of "$id")")
+    [[ -n $dir ]] && where+=(--env "CLAUDE_CONFIG_DIR=$dir")
+    (( focus )) && where+=(--focus) || where+=(--no-focus)
+    local out pane tab
+    if (( new_ws )) || ! out=$("${hs[@]}" tab create "${where[@]}" 2>/dev/null); then
+        out=$("${hs[@]}" workspace create "${where[@]}") || die "herdr couldn't create a tab or workspace"
+    fi
+    pane=$(jq -r '.result.root_pane.pane_id // empty' <<<"$out")
+    tab=$(jq -r '.result.tab.tab_id // empty' <<<"$out")
+    [[ -n $pane ]] || die "herdr returned no pane: $out"
+
+    # The new shell needs a moment to reach its prompt before agent start
+    # accepts the pane.
+    local name err i
+    name=$(herdr_agent_name "$id" "${hs[@]}")
+    for i in $(seq 20); do
+        if err=$("${hs[@]}" agent start "$name" --kind claude --pane "$pane" -- "$@" 2>&1 >/dev/null); then
+            echo "started $name ($(label_of "$id")) in herdr tab $tab"
+            return 0
+        fi
+        # Started, but stopped on a question (folder trust, the skip-
+        # permissions warning, a login): it's in the tab, waiting on you.
+        if grep -q '"agent_not_ready"' <<<"$err"; then
+            echo "started $name ($(label_of "$id")) in herdr tab $tab, waiting on a prompt there"
+            return 0
+        fi
+        # Anything else but a shell that hasn't reached its prompt yet is real.
+        grep -qiE 'shell|prompt|busy|not.?available|unavailable' <<<"$err" || break
+        sleep 0.5
+    done
+    die "herdr agent start failed: $err"
+}
+
+# Bring the local herdr window to the front, or open one. Uses the herdr
+# bar widget's helper when it is installed (it knows which window shows
+# which session), else opens a terminal when no herdr client is running.
+cmd_herdr_show() {
+    local helper="$HOME/.config/omarchy/plugins/jankeesvw.herdr/bin/herdr-sessions"
+    if [[ -x $helper ]]; then
+        "$helper" open default >/dev/null 2>&1 && return 0
+    fi
+    pgrep -u "$(id -u)" -xf 'herdr' >/dev/null 2>&1 && return 0
+    local h; h=$(herdr_bin) || die "herdr isn't installed on this machine"
+    setsid xdg-terminal-exec "$h" </dev/null >/dev/null 2>&1 &
+}
+
+# What a machine's herdr looks like, for sync: version, whether its server
+# runs, and the agent integrations it has installed.
+cmd_herdr_info() {
+    local h ver="" running=false ints="[]"
+    if h=$(herdr_bin); then
+        ver=$("$h" --version 2>/dev/null | awk '{print $2}')
+        herdr_running "$h" && running=true
+        ints=$("$h" integration status 2>/dev/null | awk -F': ' '$2 ~ /^current/ {sub(/ \(experimental\)/, "", $1); print $1}' |
+            jq -R -s 'split("\n") | map(select(length > 0))')
+    fi
+    jq -nc --arg v "$ver" --argjson r "$running" --argjson i "$ints" --arg b "${h:-}" \
+        '{installed: ($b != ""), bin: $b, version: $v, running: $r, integrations: $i}'
+}
+
+# Take a herdr config.toml on stdin. An existing different one is kept as a
+# timestamped backup; a running server reloads it.
+cmd_herdr_config_in() {
+    local cfg="$HOME/.config/herdr/config.toml" tmp h
+    mkdir -p "$(dirname "$cfg")"
+    tmp=$(mktemp)
+    cat >"$tmp"
+    if [[ -f $cfg ]] && cmp -s "$tmp" "$cfg"; then
+        rm -f "$tmp"; echo "herdr config: already current"; return 0
+    fi
+    [[ -f $cfg ]] && cat "$cfg" >"$cfg.bak-$(date +%Y%m%d-%H%M%S)"
+    cat "$tmp" >"$cfg"
+    rm -f "$tmp"
+    if h=$(herdr_bin) && herdr_running "$h"; then
+        "$h" server reload-config >/dev/null 2>&1 && echo "herdr config: updated and reloaded" && return 0
+    fi
+    echo "herdr config: updated"
+}
+
+# Install herdr integrations for the agents this machine actually has (their
+# config dir exists or the binary is on PATH); skip the rest.
+cmd_herdr_integrations_in() {
+    local h n dir bin
+    h=$(herdr_bin) || die "herdr isn't installed here"
+    # Over ssh this runs without the login shell's PATH; mise's shims and
+    # ~/.local/bin are where most agent CLIs live.
+    PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:$HOME/.bun/bin:$PATH"
+    for n in "$@"; do
+        case $n in
+        claude) dir=.claude bin=claude ;; codex) dir=.codex bin=codex ;;
+        pi) dir=.pi bin=pi ;; omp) dir=.omp bin=omp ;;
+        opencode) dir=.config/opencode bin=opencode ;; kilo) dir=.config/kilo bin=kilo ;;
+        hermes) dir=.hermes bin=hermes ;; cursor) dir=.cursor bin=cursor-agent ;;
+        grok) dir=.grok bin=grok ;; copilot) dir=.copilot bin=copilot ;;
+        droid) dir=.factory bin=droid ;; kimi) dir=.kimi-code bin=kimi ;;
+        qwen) dir=.qwen bin=qwen ;; qodercli) dir=.qoder bin=qodercli ;;
+        devin) dir=.config/devin bin=devin ;; mastracode) dir=.mastracode bin=mastracode ;;
+        antigravity-cli) dir=.gemini bin=agy ;; letta) dir=.letta bin=letta ;;
+        *) dir=".$n" bin=$n ;;
+        esac
+        # herdr hooks into the agent's own config dir, which only exists
+        # once the agent has run here.
+        if [[ -d $HOME/$dir ]]; then
+            if "$h" integration install "$n" >/dev/null 2>&1; then echo "integration $n: installed"
+            else echo "integration $n: install failed (try: herdr integration install $n)"; fi
+        elif command -v "$bin" >/dev/null 2>&1; then
+            echo "integration $n: skipped ($bin is here but has never run; run it once, then sync again)"
+        else
+            echo "integration $n: skipped ($bin isn't on this machine)"
+        fi
+    done
+}
+
+# Bring another machine up to this one: this CLI, herdr's config and agent
+# integrations, the host entry here, and herdr's saved machine. Safe to run
+# again whenever the desktop setup changes.
+cmd_sync() { # cmd_sync <host> [--dest ssh-target] [--profiles] [--no-herdr]
+    local name="" dest="" profiles="" herdr=1
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+        --dest) dest=${2:?--dest needs an ssh target}; shift 2 ;;
+        --profiles) profiles=--profiles; shift ;;
+        --no-herdr) herdr=0; shift ;;
+        -*) die "unknown option: $1" ;;
+        *) name=$1; shift ;;
+        esac
+    done
+    [[ -n $name ]] || die "usage: skal-swap sync <host> [--dest ssh-target] [--profiles] [--no-herdr]"
+    [[ $name =~ ^[A-Za-z0-9_.-]+$ ]] || die "host names are letters, digits, . _ and -"
+    load_hosts
+    if [[ -z ${HOST_DEST[$name]:-} ]]; then
+        [[ -n $dest ]] || die "no host '$name' yet. Add it with: skal-swap sync $name --dest user@host"
+        mkdir -p "$(dirname "$HOSTS_FILE")"
+        printf '%s = %s\n' "$name" "$dest" >>"$HOSTS_FILE"
+        HOST_NAMES+=("$name"); HOST_DEST[$name]=$dest
+        echo "added $name = $dest to $HOSTS_FILE"
+    fi
+    dest=${HOST_DEST[$name]}
+
+    cmd_push "$name" $profiles
+    (( herdr )) || return 0
+
+    local lh linfo rinfo
+    lh=$(herdr_bin) || { echo "herdr isn't installed here, nothing of it to sync"; return 0; }
+    linfo=$(cmd_herdr_info)
+    rinfo=$(ssh -o BatchMode=yes "$dest" "$(remote_cmd _herdr-info)") || die "couldn't read herdr on $name"
+
+    # herdr's own setup on the far side (install, server) is `herdr machine
+    # add`, which also saves the machine here.
+    local saved
+    saved=$("$lh" machine list --json 2>/dev/null |
+        jq -r --arg d "$dest" --arg n "$name" '.[] | select(.target == $d or (.target | endswith("@" + $d)) or .label == $n or .label == $d) | .label' | head -1)
+    if [[ -z $saved || $(jq -r '.installed' <<<"$rinfo") != true ]]; then
+        if [[ -t 0 ]]; then
+            echo "setting up herdr on $name (herdr machine add)…"
+            "$lh" machine add --label "$name" "$dest" || die "herdr machine add failed"
+            rinfo=$(ssh -o BatchMode=yes "$dest" "$(remote_cmd _herdr-info)")
+        else
+            echo "herdr isn't set up on $name yet. Run in a terminal: herdr machine add --label $name $dest"
+        fi
+    else
+        echo "herdr machine: saved here as '$saved'"
+    fi
+    if [[ $(jq -r '.installed' <<<"$rinfo") == true ]]; then
+        local lv rv
+        lv=$(jq -r '.version' <<<"$linfo"); rv=$(jq -r '.version' <<<"$rinfo")
+        [[ $lv == "$rv" ]] || echo "herdr version: $name has $rv, this machine $lv (update with: ssh $dest herdr update)"
+        if [[ -f $HOME/.config/herdr/config.toml ]]; then
+            ssh -o BatchMode=yes "$dest" "$(remote_cmd _herdr-config-in)" <"$HOME/.config/herdr/config.toml"
+        fi
+        local -a want=()
+        mapfile -t want < <(jq -r --argjson have "$(jq '.integrations' <<<"$rinfo")" \
+            '.integrations - $have | .[]' <<<"$linfo")
+        if (( ${#want[@]} )); then
+            ssh -o BatchMode=yes "$dest" "$(remote_cmd _herdr-integrations-in "${want[@]}")"
+        else
+            echo "herdr integrations: already match"
+        fi
+    fi
+
+    # Claude logins never travel; say which ones still need one there.
+    local missing
+    missing=$(ssh -o BatchMode=yes "$dest" "$(remote_cmd status --json)" 2>/dev/null |
+        jq -r '.profiles[] | select(.oauth and (.login.logged_in | not)) | .id' 2>/dev/null || true)
+    if [[ -n $missing ]]; then
+        echo "not logged in on $name yet:"
+        while read -r m; do echo "  skal-swap @$name login $m"; done <<<"$missing"
+    fi
 }
 
 cmd_init() {
@@ -1066,6 +1947,11 @@ cmd_migrate_glm() {
 }
 
 main() {
+    if [[ ${1:-} == @* ]]; then
+        local h=${1#@}
+        shift
+        cmd_at "$h" "$@"
+    fi
     case ${1:-status} in
     status)
         load_profiles
@@ -1091,8 +1977,9 @@ main() {
         cmd_models "$@"
         ;;
     swap)
+        shift
         load_profiles
-        cmd_swap
+        cmd_swap "$@"
         ;;
     edit) cmd_edit ;;
     init) cmd_init "${2:-}" ;;
@@ -1101,6 +1988,38 @@ main() {
         cmd_oauth_add "$@"
         ;;
     migrate-glm) cmd_migrate_glm "${2:-}" ;;
+    run)
+        shift
+        cmd_run "$@"
+        ;;
+    login)
+        shift
+        cmd_login "$@"
+        ;;
+    hosts) cmd_hosts "${2:-}" ;;
+    push)
+        shift
+        load_profiles
+        cmd_push "$@"
+        ;;
+    snapshot) cmd_snapshot ;;
+    herdr)
+        shift
+        cmd_herdr "$@"
+        ;;
+    herdr-show) cmd_herdr_show ;;
+    sync)
+        shift
+        load_profiles
+        cmd_sync "$@"
+        ;;
+    _herdr-info) cmd_herdr_info ;;
+    _herdr-config-in) cmd_herdr_config_in ;;
+    _herdr-integrations-in)
+        shift
+        cmd_herdr_integrations_in "$@"
+        ;;
+    fleet) cmd_fleet ;;
     usage)
         shift
         cmd_usage_json "$@"

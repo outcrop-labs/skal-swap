@@ -1,5 +1,56 @@
 # Changelog
 
+## 1.4.0
+
+### Several Claude plans at once, on more than one machine
+
+- **`skal-swap run <id>`** launches claude on a profile without switching the
+  machine. Every profile gets its own config dir
+  (`~/.local/share/skal.swap/homes/<id>`, used as `CLAUDE_CONFIG_DIR`) with
+  the rest of `~/.claude` symlinked in, so a Max and a Pro login (or a Claude
+  plan and a z.ai key) can run side by side and still share projects,
+  history, skills and plugins. `-y` / `--skip-permissions` launches it with
+  `--dangerously-skip-permissions`.
+- **`skal-swap login <id>`** logs a plan straight into its own dir with
+  `claude auth login`. No more `/logout`, `/login`, `oauth-add` dance.
+- **Logins move, they don't get copied.** OAuth refresh tokens rotate, so a
+  login lives in exactly one place: its own dir, or `~/.claude` while it's the
+  machine's default. `use` moves it in and the previous one back out to its
+  owner. Ownership goes by account uuid. Fixes the old swapper losing a
+  plain login's credentials when switching to an adopted one.
+- **Per-plan usage.** Each Claude login reports its own session, weekly and
+  model-scoped weekly limits (the `/usage` endpoint, read with that login's
+  token, never refreshed by us), so every plan has numbers, not just the
+  active one. An expired or revoked token says so.
+- **Other machines.** `hosts.conf` lists them, `skal-swap @<host> <cmd>` runs
+  anything there over ssh (with a terminal for `run`, `login` and `edit`),
+  `push` installs the CLI, and `fleet --json` snapshots them all. Credentials
+  never travel between machines.
+- **Widget:** a section per machine, plan badges (Max 20x, Pro, ...), running
+  session counts, up to three usage bars per row, a play button that opens a
+  terminal running the profile. Every meter shows when its window resets: a
+  countdown inside a day, weekday and time past that, so the weekly reset is
+  visible next to the session one. The bar label shows `+N` when sessions are
+  running on profiles other than the current one. The title and footer
+  controls are pinned and only the machine list scrolls (wheel, scrollbar, or
+  arrow keys), sized to the screen so nothing falls off the bottom. Each
+  machine's "log in a plan" button sits in its header.
+- **herdr.** `skal-swap herdr <id>` opens a herdr tab running claude on a
+  profile (`-y` skips permissions, `--cwd`, `--workspace`), local or with
+  `@host`, and each widget row has a herdr button next to play. Right-click
+  either button to launch with `--dangerously-skip-permissions`.
+- **`skal-swap sync <host>`** brings another machine up to this one: the CLI,
+  herdr (`machine add` when needed), herdr's `config.toml` with a backup of
+  whatever was there, and the herdr integrations for the agents that box has.
+  `--dest` adds a brand new host on the way.
+- The old bundle store (`credentials/<id>.json`) is imported into the
+  profile's dir on first use and renamed `.imported`.
+- **`swap` picks the profile.** With five logins the old quick-toggle between
+  the first two profiles in the file landed on the wrong one almost every
+  time. `skal-swap swap <id>` goes straight to a profile; bare `swap` in a
+  terminal shows a numbered list and takes a row number or an id (blank
+  stays). The bar hotkey, which runs with no terminal, keeps the toggle.
+
 ## 1.3.0
 
 ### Per-profile output length, so long answers stop getting truncated

@@ -58,7 +58,9 @@ Per-key usage (`usage = <vendor>` on a profile) works for **z.ai, OpenRouter,
 DeepSeek, Kimi/Moonshot, Kilo, Novita, xAI (grok), MiniMax and opencode
 zen** — each key gets fetched under its own account. If you've only got one
 profile on a provider, usage attaches by itself and you can skip the marker.
-Claude OAuth usage follows whichever account is actually logged in. Providers
+Every Claude login shows its own session and weekly limits, read straight
+from the endpoint behind Claude Code's `/usage`, whichever one the machine is
+on. Providers
 with no public usage API get a console link instead — Alibaba's token-plan
 gateways publish nothing at all, no endpoint, no headers, so a link is the
 best anyone can do. All of this needs
@@ -166,7 +168,7 @@ old one back when you return to the OAuth profile.
 | `env.<NAME>` | extra env written with the profile |
 | `usage` | optional per-key usage marker (`zai`, `openrouter`, `deepseek`, `kimi`, `kilo`, `novita`, `moonshot`, `grok`, `minimax`, `opencode-go`) |
 | `icon` | optional provider-mark override (`zai`, `openai`, `qwen`, …) |
-| `oauth` | `true` for adopted OAuth-login profiles (see below) |
+| `oauth` | `true` marks a Claude login; implied by no `base_url` and no `token` (see below) |
 
 ### Models per endpoint
 
@@ -251,28 +253,108 @@ need to move it) and timed out at 10 seconds. Over either limit the endpoint
 is skipped rather than trusted, and the profile switches on whatever `model`
 it has configured.
 
-### Multiple Claude OAuth logins
+### Several Claude plans, side by side
 
-Claude Code holds one OAuth session at a time. Skal Swap will juggle several
-anyway. Adopt whichever account you're logged into right now:
+Each Claude login gets its own Claude Code config dir under
+`~/.local/share/skal.swap/homes/<id>`. That's what lets two plans run at the
+same time: `skal-swap run <id>` starts claude with `CLAUDE_CONFIG_DIR` pointed
+at that profile's dir, and nothing else on the machine moves. Everything else
+in `~/.claude` (projects, history, skills, plugins, hooks, `CLAUDE.md`) is
+symlinked in, so every plan shares the same memory and `/resume` works across
+them. Only the login, `settings.json` and a little account-scoped state stay
+separate.
 
 ```bash
-skal-swap oauth-add work          # stores the live ~/.claude/.credentials.json + account
-claude                            # /logout, then /login as the other one
-skal-swap oauth-add personal      # adopt that one too
+skal-swap login max --name "Claude Max"   # browser login, straight into its own dir
+skal-swap login pro --name "Claude Pro"   # and another
+skal-swap run pro                         # claude on Pro, while Max keeps going elsewhere
+skal-swap run pro -- --resume             # anything after -- goes to claude
+skal-swap run -y pro                      # with --dangerously-skip-permissions
+skal-swap use max                         # or make one the machine's default
 ```
 
-Switching to an OAuth profile swaps its stored credentials into place and
-clears the API-key overrides. Switching away syncs the live session back
-first, token refreshes included, so nothing gets lost. Log into a *different*
-account by hand while a profile is active and it'll spot the mismatch, refuse
-to overwrite the stored one, and tell you to `oauth-add` the new login rather
-than quietly clobbering it.
+A section with no `base_url` and no `token` is a Claude login (`oauth = true`
+says so explicitly). `run` works on provider profiles too, so a z.ai session
+can sit next to a Claude one.
 
-Bundles live in `~/.config/skal.swap/credentials/` (chmod 600, outside any
-repo). Same warning as with keys: swap while no claude sessions are running.
-A live session is sitting on its old tokens and will write them back when it
-exits.
+A login lives in exactly one place at a time and never gets copied. OAuth
+refresh tokens rotate, so two copies refreshing on their own end with one of
+them dead. `use` moves a login from its dir into `~/.claude`, after moving
+whatever login was there back to its owner's dir. Ownership goes by account
+uuid, so a manual `/login` doesn't confuse it, and a login nobody has claimed
+yet goes to the first login profile that hasn't got one. The profile's
+`settings.json` is rebuilt from `~/.claude/settings.json` on every launch, so
+your settings reach every plan but a z.ai switch never leaks into a Claude one.
+Anything you change with `/config` inside a `run` session lands in that copy
+and is gone next launch. Change `~/.claude/settings.json` instead.
+
+Same warning as with keys: a running session holds its tokens in memory and
+writes refreshed ones back where it started, so restart sessions after moving
+a login with `use`. The CLI tells you when there are any.
+
+Upgrading from the old bundle store (`~/.config/skal.swap/credentials/<id>.json`)
+needs nothing: each bundle moves into its profile's dir the first time that
+profile is used, and the file is renamed `.imported`.
+
+### Other machines
+
+List them in `~/.config/skal.swap/hosts.conf` and the popup grows a section
+per machine, with the same rows, plan badges, session counts and usage bars:
+
+```ini
+# name = ssh destination
+devbox = outcrop-labs
+```
+
+```bash
+skal-swap push devbox                  # install this CLI there (needs jq + curl)
+skal-swap @devbox login max            # log a plan in on that machine
+skal-swap @devbox run max              # claude there, in this terminal
+skal-swap @devbox use max              # switch that machine
+```
+
+Every machine keeps its own profiles and its own logins. Credentials never
+travel between machines, because a refresh on one would knock the other out;
+log each plan in on each machine instead (`push --profiles` copies your
+provider keys over when the host has no `profiles.conf` yet). `run`, `login`
+and `edit` get a terminal and a login shell on the far side, so claude starts
+with the same environment as a session opened by hand.
+
+### herdr
+
+With [herdr](https://herdr.dev) installed, every row gets a second button
+that opens a herdr tab running claude on that profile, on that row's machine,
+and brings your herdr window up. It goes through `herdr agent start`, so
+herdr tracks it as a claude agent like any other (named after the profile,
+`claude-pro`, `claude-pro-2`, ...). Right-click either launch button to skip
+permission prompts.
+
+```bash
+skal-swap herdr claude-pro                    # tab in the focused herdr workspace
+skal-swap herdr -y claude-pro --cwd ~/code/x  # skip permissions, start somewhere else
+skal-swap herdr claude-pro --workspace        # its own workspace instead
+skal-swap @devbox herdr claude-pro            # on the devbox's herdr server
+```
+
+A remote tab shows up in your local herdr under that saved SSH machine.
+
+### Setting up a new box
+
+`sync` brings another machine up to this one, and is safe to run again
+whenever your desktop setup changes:
+
+```bash
+skal-swap sync newbox --dest jon@newbox      # first time: adds it to hosts.conf
+skal-swap sync devbox                        # later: just refresh
+```
+
+It installs this CLI there, sets herdr up (`herdr machine add` when the machine
+isn't saved yet, which installs herdr on the far side), copies your herdr
+`config.toml` (a different one there is kept as a timestamped backup, and a
+running server reloads), and installs the herdr integrations you have here
+for every agent that box has actually run. Last, it lists the Claude plans
+that still need a `login` there. Provider keys come along only with
+`--profiles`, and Claude logins never do.
 
 ### Alibaba Cloud token plans (Qwen, DeepSeek, …)
 
@@ -369,19 +451,28 @@ skal-swap models [<id>]       models the endpoint reports (* = active)
 skal-swap swap                quick-toggle between the first two profiles
 skal-swap edit                open the profiles file in $EDITOR
 skal-swap init                write an example profiles file
-skal-swap usage --json        per-account usage from ai-usagebar, normalized
+skal-swap usage --json        per-account usage (ai-usagebar + each Claude login)
+skal-swap run <id> [-- args]  claude on a profile without switching the machine
+                              [-y|--skip-permissions] skips permission prompts
+skal-swap login [<id>]        log a Claude plan into a profile  [--name N] [--email E]
+skal-swap oauth-add <id>      claim the login already in ~/.claude as a profile
+skal-swap hosts [--json]      machines from hosts.conf
+skal-swap @<host> <cmd...>    any command on another machine
+skal-swap push <host>         install this CLI on a host  [--profiles]
+skal-swap sync <host>         bring a machine up to this one (CLI, herdr setup)
+                              [--dest user@host] [--profiles] [--no-herdr]
+skal-swap herdr [-y] <id>     a herdr tab running claude on a profile
+                              [--cwd DIR] [--workspace] [--no-focus] [--session S]
+skal-swap fleet --json        this machine plus every host, for the widget
 ```
 
 Tokens are always masked to their first 8 characters.
 
 ## Roadmap
 
-- **One Claude Code per provider, in containers.** Right now a switch is
-  machine-wide, because `settings.json` is global — every session follows the
-  active profile and you get exactly one provider at a time. The plan is
-  per-provider instances running side by side, each pinned to its own
-  endpoint, key and model, so a cheap plan can chew through something long
-  and boring while a better one handles the work you're watching.
+- **Containers per provider.** `run` already gives each profile its own
+  config dir, so plans and providers run side by side. Containers would add
+  isolation on top: pinned tool versions, a separate filesystem view.
 - **The Skalswap CLI** will drive those instances. Separate project, entirely
   optional, and not written yet. It'll ship `skal-swap` as a superset of the
   script bundled here, so installing it upgrades the command rather than

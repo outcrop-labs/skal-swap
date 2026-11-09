@@ -69,12 +69,20 @@ Panel {
       if (!currentProfile || profiles[i].id !== currentProfile.id) n += profiles[i].sessions || 0
     return n
   }
-  readonly property color foreground: bar ? bar.barForeground : Commons.Color.foreground
+  // The bar injects fixedEdge into widgets that declare it, so the widget
+  // keeps its footing when it grows (label changes, +N appearing).
+  property string fixedEdge: "center"
+
+  // Panel exposes barForeground with the same fallback this used to spell
+  // out by hand; vertical bars are compact (28px), where first-party text
+  // widgets fall back to icon-only forms.
+  readonly property color foreground: root.barForeground
+  readonly property bool barVertical: bar ? bar.vertical : false
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property string labelBase: {
     if (!statusJson) return "…"
     if (!currentProfile) return "custom"
-    if (labelStyle === "Icon") return ""
+    if (labelStyle === "Icon" || root.barVertical) return ""
     return labelStyle === "Host" ? currentProfile.host : currentProfile.name
   }
 
@@ -182,6 +190,61 @@ Panel {
 
   function quickSwap() {
     swapProc.running = true
+  }
+
+  // The contract entry for shell-driven refreshes: status is cheap and
+  // always safe; usage and fleet only matter while the picker is open.
+  function refresh() {
+    refreshStatus()
+    if (root.opened) { refreshUsage(); refreshFleet() }
+  }
+
+  // Keyboard nav: the popup's profile rows flattened in display order
+  // (machines in hostList order, each machine's profiles in file order).
+  readonly property var selectableRows: {
+    var rows = []
+    var hosts = root.hostList
+    for (var i = 0; i < hosts.length; i++) {
+      var st = hosts[i].status
+      var ps = (st && st.profiles) ? st.profiles : []
+      for (var j = 0; j < ps.length; j++)
+        rows.push({ host: hosts[i].name, profile: ps[j],
+                    active: !!(st && st.current === ps[j].id) })
+    }
+    return rows
+  }
+  property int selectedIndex: -1
+
+  onSelectableRowsChanged: {
+    if (root.selectedIndex >= root.selectableRows.length)
+      root.selectedIndex = root.selectableRows.length - 1
+  }
+
+  function initialSelection() {
+    for (var i = 0; i < root.selectableRows.length; i++)
+      if (root.selectableRows[i].active) return i
+    return root.selectableRows.length > 0 ? 0 : -1
+  }
+
+  function isRowSelected(hostName, profileId) {
+    var row = root.selectedIndex >= 0 ? root.selectableRows[root.selectedIndex] : null
+    return !!row && row.host === hostName && row.profile.id === profileId
+  }
+
+  function moveSelection(dy) {
+    if (root.selectableRows.length === 0) return
+    root.selectedIndex = Math.min(Math.max(0, root.selectedIndex + dy),
+                                  root.selectableRows.length - 1)
+  }
+
+  // Enter/Space on the selected row: same behavior as clicking it.
+  function activateSelected() {
+    var r = root.selectedIndex >= 0 ? root.selectableRows[root.selectedIndex] : null
+    if (!r) return
+    var needsLogin = r.profile.oauth && !((r.profile.login || {}).logged_in)
+    root.close()
+    if (needsLogin) root.inTerminal(r.host, ["login", r.profile.id])
+    else if (!r.active) root.useProfile(r.host, r.profile.id, r.profile.name)
   }
 
   Component.onCompleted: {
@@ -449,15 +512,20 @@ Panel {
     contentHeight: fittedContentHeight(chromeHeight + listColumn.implicitHeight,
                                        Math.min(Style.space(720), screenCap))
 
-    onOpenChanged: if (open) { root.refreshUsage(); root.refreshFleet(); flick.contentY = 0 }
+    onOpenChanged: if (open) {
+      root.refreshUsage(); root.refreshFleet(); flick.contentY = 0
+      root.selectedIndex = root.initialSelection()
+    }
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      Keys.onEscapePressed: root.close()
-      Keys.onUpPressed: flick.contentY = Math.max(0, flick.contentY - Style.space(40))
-      Keys.onDownPressed: flick.contentY = Math.min(Math.max(0, flick.contentHeight - flick.height),
-                                                     flick.contentY + Style.space(40))
+      onMoveRequested: function(dx, dy) {
+        if (dy !== 0) root.moveSelection(dy)
+      }
+      onActivateRequested: root.activateSelected()
+      onCloseRequested: root.close()
+      onTabRequested: function(direction) { root.switchPanel(direction) }
     }
 
     // Pinned: title.
@@ -635,9 +703,20 @@ Panel {
               width: hostSection.width
               height: rowBody.implicitHeight + Style.space(12) + (alibabaHost ? Style.space(28) : 0)
 
-              readonly property color rowFg: root.bar ? root.bar.barForeground : Commons.Color.foreground
+              readonly property color rowFg: root.barForeground
               readonly property var prof: modelData
               readonly property bool active: hostSection.hostStatus && hostSection.hostStatus.current === prof.id
+              readonly property bool selected: root.isRowSelected(hostSection.hostName, prof.id)
+              onSelectedChanged: if (selected) row.bringIntoView()
+
+              function bringIntoView() {
+                var y = row.mapToItem(flick, 0, 0).y
+                if (y < flick.contentY + Style.space(6))
+                  flick.contentY = Math.max(0, y - Style.space(6))
+                else if (y + row.height > flick.contentY + flick.height - Style.space(6))
+                  flick.contentY = Math.min(Math.max(0, flick.contentHeight - flick.height),
+                                            y + row.height - flick.height + Style.space(6))
+              }
               readonly property var login: prof.login || null
               readonly property bool needsLogin: prof.oauth && !(login && login.logged_in)
               readonly property var usageInfo: prof.usage_id ? (hostSection.hostData.usageMap[prof.usage_id] || null) : null
@@ -676,7 +755,7 @@ Panel {
                 Rectangle {
                   anchors.fill: parent
                   radius: Style.cornerRadius
-                  color: (rowMouse.containsMouse || playMouse.containsMouse)
+                  color: (rowMouse.containsMouse || playMouse.containsMouse || row.selected)
                          ? Util.alpha(row.rowFg, 0.08) : "transparent"
                 }
 
@@ -1005,7 +1084,7 @@ Panel {
         height: Style.space(30)
         radius: Style.cornerRadius
         color: editMouse.containsMouse ? Util.alpha(editFg, 0.08) : "transparent"
-        readonly property color editFg: root.bar ? root.bar.barForeground : Commons.Color.foreground
+        readonly property color editFg: root.barForeground
 
         Text {
           anchors.left: parent.left

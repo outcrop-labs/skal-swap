@@ -40,6 +40,9 @@ most-used profiles. Every switch fires a toast so you know what just changed.
 - Popup picker with the active profile marked, plus per-account usage
   readouts if you have [ai-usagebar](https://github.com/akitaonrails/ai-usagebar)
   (z.ai accounts get session/weekly percentages)
+- The picker is keyboard-driven too: j/k or the arrows walk the rows,
+  Enter activates the selected one (same as clicking it), Tab hops to the
+  next open panel, Esc closes
 - Works with any Anthropic-compatible endpoint — z.ai, proxies, gateways,
   whatever — alongside the official Anthropic API
 - A profile with no token drops you back to your normal `claude` OAuth login

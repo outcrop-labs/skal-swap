@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.5.0
+
+### Keyboard picker, current with Omarchy 4.5
+
+- **The picker is keyboard-driven.** j/k or the arrows walk the profile
+  rows (across machine sections, scrolling them into view), Enter or Space
+  activates the selected row exactly like a click — switch, or open the
+  login flow for a plan that isn't logged in yet — Tab and Shift+Tab hop to
+  the next or previous open panel, and Esc closes. The panel now speaks the
+  shell's `PanelKeyCatcher` contract instead of handling raw key events.
+- **Vertical bars get the compact form.** On a left/right bar (28px wide)
+  the widget shows its icon only, like the first-party text widgets do.
+- The widget declares `fixedEdge` and a `refresh()` the shell can call,
+  matching the bar-widget contract test the shell now ships with; two
+  hand-rolled `barForeground` lookups now use the one `Panel` provides.
+
 ## 1.4.0
 
 ### Several Claude plans at once, on more than one machine

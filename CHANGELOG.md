@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.1
+
+### The picker's wheel scrolls like the launcher
+
+- One wheel notch now moves three rows of the actual list (measured off
+  the content itself), matching the omarchy launcher's dropdown step
+  instead of the Flickable's default fraction-of-a-row crawl. Trackpads
+  keep their native pixel deltas.
+
 ## 1.5.0
 
 ### Keyboard picker, current with Omarchy 4.5

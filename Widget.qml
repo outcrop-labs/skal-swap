@@ -595,6 +595,23 @@ Panel {
       interactive: contentHeight > height
       QQC.ScrollBar.vertical: QQC.ScrollBar { policy: QQC.ScrollBar.AsNeeded }
 
+      // The launcher's wheel step: one notch = three rows (the Flickable's
+      // own default notch is a fraction of a row here, which crawls).
+      // Trackpads report true pixel deltas and scroll natively. target: null
+      // keeps the handler from auto-flicking the Flickable on top of this.
+      WheelHandler {
+        target: null
+        onWheel: function(event) {
+          var row = root.selectableRows.length > 0
+            ? listColumn.implicitHeight / root.selectableRows.length
+            : Style.space(60)
+          var delta = event.pixelDelta.y || event.angleDelta.y / 120 * row * 3
+          flick.contentY = Math.max(0, Math.min(Math.max(0, flick.contentHeight - flick.height),
+                                                flick.contentY - delta))
+          event.accepted = true
+        }
+      }
+
       Column {
         id: listColumn
         width: flick.width - (flick.contentHeight > flick.height ? Style.space(8) : 0)

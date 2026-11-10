@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.3
+
+### The hotkey swap can't land on a dead profile anymore
+
+- No-terminal `swap` (bar hotkey, `@host`) used to blind-toggle between the
+  first two profiles in the file; on a machine where that target isn't
+  logged in, it failed deep inside the switch. It now picks the first
+  other profile that can actually be switched to here — logins without
+  credentials on this machine are skipped — and when nothing qualifies,
+  says to add one with `skal-swap login` instead.
+
 ## 1.5.2
 
 ### Wheel events actually reach the picker again

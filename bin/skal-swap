@@ -36,6 +36,12 @@
 
 set -euo pipefail
 
+# Everything this tool creates is private by default: profiles.conf and the
+# credential/home stores hold live API keys and OAuth bundles, and several
+# are written by redirection with chmod only afterwards — a permissive umask
+# would leave a 0644 window (or a retained descriptor) around real secrets.
+umask 077
+
 PROFILES="${CCS_PROFILES:-$HOME/.config/skal.swap/profiles.conf}"
 SETTINGS="${CCS_SETTINGS:-$HOME/.claude/settings.json}"
 CREDS="${CCS_CREDS:-$HOME/.claude/.credentials.json}"

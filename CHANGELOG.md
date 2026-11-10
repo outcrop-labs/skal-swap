@@ -8,6 +8,10 @@
   the content itself), matching the omarchy launcher's dropdown step
   instead of the Flickable's default fraction-of-a-row crawl. Trackpads
   keep their native pixel deltas.
+- The CLI runs under `umask 077`, so every file it creates is private
+  from the first byte — profiles written by redirection, credential
+  stores, per-profile homes — instead of relying on a `chmod 600` that
+  only landed afterwards.
 
 ## 1.5.0
 

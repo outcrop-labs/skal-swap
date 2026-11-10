@@ -247,6 +247,17 @@ Panel {
     else if (!r.active) root.useProfile(r.host, r.profile.id, r.profile.name)
   }
 
+  // Wheel scrolling, shared by the picker's wheel area. One notch = three
+  // rows of the actual content; trackpads pass native pixel deltas.
+  function applyWheel(pixelY, angleY) {
+    var row = root.selectableRows.length > 0
+      ? listColumn.implicitHeight / root.selectableRows.length
+      : Style.space(60)
+    var delta = pixelY || angleY / 120 * row * 3
+    flick.contentY = Math.max(0, Math.min(Math.max(0, flick.contentHeight - flick.height),
+                                          flick.contentY - delta))
+  }
+
   Component.onCompleted: {
     refreshStatus()
     // Warm the usage cache in the background so the first popup open paints
@@ -595,27 +606,26 @@ Panel {
       interactive: contentHeight > height
       QQC.ScrollBar.vertical: QQC.ScrollBar { policy: QQC.ScrollBar.AsNeeded }
 
-      // The launcher's wheel step: one notch = three rows (the Flickable's
-      // own default notch is a fraction of a row here, which crawls).
-      // Trackpads report true pixel deltas and scroll natively. target: null
-      // keeps the handler from auto-flicking the Flickable on top of this.
-      WheelHandler {
-        target: null
-        onWheel: function(event) {
-          var row = root.selectableRows.length > 0
-            ? listColumn.implicitHeight / root.selectableRows.length
-            : Style.space(60)
-          var delta = event.pixelDelta.y || event.angleDelta.y / 120 * row * 3
-          flick.contentY = Math.max(0, Math.min(Math.max(0, flick.contentHeight - flick.height),
-                                                flick.contentY - delta))
-          event.accepted = true
+      // One wheel notch = three rows, the launcher's dropdown step (the
+      // Flickable's own notch is a fraction of a row here, which crawls);
+      // trackpads report true pixel deltas and scroll natively. MouseArea,
+      // not WheelHandler: on this stack the handler's wheel signal never
+      // fires yet still swallows the event, and MouseArea.onWheel is the
+      // one that reaches us. NoButton keeps clicks and hover with the rows.
+      MouseArea {
+        id: wheelArea
+        width: flick.width
+        height: listColumn.implicitHeight
+        acceptedButtons: Qt.NoButton
+        onWheel: function(wheel) {
+          root.applyWheel(wheel.pixelDelta.y, wheel.angleDelta.y)
+          wheel.accepted = true
         }
-      }
 
-      Column {
-        id: listColumn
-        width: flick.width - (flick.contentHeight > flick.height ? Style.space(8) : 0)
-        spacing: Style.space(2)
+        Column {
+          id: listColumn
+          width: flick.width - (flick.contentHeight > flick.height ? Style.space(8) : 0)
+          spacing: Style.space(2)
 
         Repeater {
           model: root.hostList
@@ -1084,6 +1094,8 @@ Panel {
 
         Item { width: listColumn.width; height: Style.space(4) }
       }
+      }
+
     }
 
     // Pinned: footer controls.

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.2
+
+### Wheel events actually reach the picker again
+
+- 1.5.1's wheel step never fired: a `WheelHandler`'s `wheel` signal isn't
+  delivered on this stack (Qt 6.12 + quickshell) yet the handler still
+  swallows the event, so the picker stopped scrolling entirely. The wheel
+  now runs through a `MouseArea` with `acceptedButtons: NoButton` — the
+  classic path, verified firing — wrapping the list, with the same
+  three-rows-per-notch step and native trackpad pixel deltas.
+
 ## 1.5.1
 
 ### The picker's wheel scrolls like the launcher

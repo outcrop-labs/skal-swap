@@ -4,6 +4,8 @@ Swap the model behind [Claude Code](https://claude.com/claude-code) from your
 [Omarchy](https://omarchy.org) bar. Shows the key, endpoint and model you're
 actually on. Click to change any of it.
 
+![Skål Swap](preview.png)
+
 ## Why
 
 Claude Code is a great harness. The agent loop, the tooling, the ergonomics,

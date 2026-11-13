@@ -1152,11 +1152,16 @@ write_settings_for() { # write_settings_for <id>
     managed_json=$(printf '%s\n' "${managed[@]}" | sort -u \
         | jq -R -s 'split("\n") | map(select(length > 0))')
 
+    # pairs_json carries the token and any env.* secrets, so it reaches jq
+    # through a pipe (process substitution of the printf builtin, which
+    # never execs), never as an argument: argv is readable by other local
+    # users wherever /proc isn't mounted hidepid. tests/settings_write_argv.sh
+    # holds every child process to that.
     rewrite "$SETTINGS" \
-        --argjson del_keys "$managed_json" --argjson add_pairs "$pairs_json" --argjson acw "${acw:-null}" \
+        --argjson del_keys "$managed_json" --slurpfile add_pairs <(printf '%s' "$pairs_json") --argjson acw "${acw:-null}" \
         '.env = ((.env // {})
                  | with_entries(. as $e | select(($del_keys | index($e.key)) == null))
-                 + $add_pairs)
+                 + $add_pairs[0])
           | if $acw == null then del(.autoCompactWindow) else .autoCompactWindow = $acw end'
     apply_model_selection "$id"
     chmod 600 "$SETTINGS"
@@ -1235,7 +1240,7 @@ status_human() {
     else
         local tok
         tok=$(settings_env ANTHROPIC_AUTH_TOKEN)
-        echo "claude code : ⚠ ${tok:+$(mask "$tok")} ${tok:-(no token set)} — no profile matches"
+        echo "claude code : ⚠ $([[ -n $tok ]] && mask "$tok" || echo "(no token set)") — no profile matches"
     fi
     for id in "${PROFILE_IDS[@]}"; do
         [[ $id == "$cur" ]] && continue

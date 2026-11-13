@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.5.4
+
+### Keys stay out of process listings during a switch
+
+- A switch (`use`, `swap`, or preparing a `run`) handed the settings
+  writer its JSON as a `jq --argjson` argument, and that JSON carries the
+  profile token and any `env.*` secrets. Command lines are readable by
+  other local users wherever `/proc` isn't mounted `hidepid`, so a
+  secret was briefly visible there. It now reaches jq through a pipe
+  (`--slurpfile` from the `printf` builtin), never an argument.
+- `tests/settings_write_argv.sh` fronts every binary in `/usr/bin` with a
+  logging wrapper, runs a switch to a profile with a synthetic token and
+  `env.*` secret, and fails if either appears in any child's argv. It
+  also checks that both still land in `settings.json`, and that stale
+  managed keys are cleared.
+- `status`, when no profile matched the live token, printed the masked
+  prefix followed by the whole token. It prints only the prefix now.
+
+### A real preview
+
+- The store preview is now the actual picker: logins, providers and
+  usage bars, shot against a sandboxed demo home with no real accounts
+  in frame.
+
 ## 1.5.3
 
 ### The hotkey swap can't land on a dead profile anymore
